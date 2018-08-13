@@ -23,7 +23,8 @@ DRAG AND DROP a sim package file onto find_merged_cc.bat
 A command line window will pop up listing all of the filenames in your
 CC Magic folder for the custom content detected.
 
-
+It may take a few minutes the first time you use it every boot if you haven't
+run Sims 3 yet. After that, it should only take a few seconds.
 
 
 
