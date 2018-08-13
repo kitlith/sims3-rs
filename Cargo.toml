@@ -1,0 +1,24 @@
+cargo-features = ["edition"]
+
+[package]
+name = "sims3_rs"
+version = "0.1.0"
+authors = ["Kitlith <kitlith@kitl.pw>"]
+edition = '2018'
+
+[dependencies]
+scroll = "0.9"
+scroll_derive = "*"
+memmap = "0.6.2"
+num-traits = "0.2"
+num-derive = "0.2"
+sha2 = "0.7"
+walkdir = "2"
+generic-array = "0.11.1"
+quick-error = "1.2.2"
+byteorder = "1"
+lazy-init = "0.3.0"
+rayon = "1.0.2"
+lazy_static = "1.1.0"
+
+[dev-dependencies]

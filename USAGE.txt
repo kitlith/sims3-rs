@@ -1,0 +1,45 @@
+===============================================================================
+DISCLAIMER
+===============================================================================
+*****This tool is designed to work with sims 3 package files*****
+*****It will not work on sims3pack files*****
+
+It will only work if your custom content is installed as package files.
+It can only be used on sims which have been exported as a sims3pack and then
+converted to a package file.
+
+This tool assumes that you are using CC Magic. If you are not using CC Magic,
+have moved your Documents folder, etc... see the section labeled
+"Changing the Custom Content Search Directory".
+
+
+===============================================================================
+USAGE
+===============================================================================
+Extract find_merged_cc.bat and find_merged_cc.exe into a folder before you begin.
+
+DRAG AND DROP a sim package file onto find_merged_cc.bat
+
+A command line window will pop up listing all of the filenames in your
+CC Magic folder for the custom content detected.
+
+
+
+
+
+===============================================================================
+Changing the Custom Content Search Directory
+===============================================================================
+Open find_merged_cc.bat in a text editor. The third line should look like this:
+
+SET CCDIR="%USERPROFILE%\Documents\Electronic Arts\CC Magic\Content\Packages"
+
+You want to change the path enclosed in quotes to the path to your
+custom content directory.
+For example:
+
+SET CCDIR="C:\Users\<your name>\Documents\Electronic Arts\The Sims 3\Mods\Packages"
+
+
+===============================================================================
+Source code available at: https://github.com/kitlith/sims3-rs
