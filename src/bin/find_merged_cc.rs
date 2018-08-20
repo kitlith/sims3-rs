@@ -22,13 +22,16 @@ fn filter_tgi_into_map(package: &DBPF<'_>) -> HashSet<(u32, u32, u64)> {
             .files
             .iter()
             .filter(|entry| { // TODO: Find patterns as well.
+                // Clothing, hair, etc.
                 entry.resource_type == ResourceType::CASP.to_u32().unwrap()
-                // This can't be done because TGI conflicts seem common with this tag.
-             // || entry.resource_type == ResourceType::XMLResource.to_u32().unwrap()
-                // using the tone to try and find skins. may not narrow down to one, though.
+                // Sliders
+             || entry.resource_type == ResourceType::FACE.to_u32().unwrap()
+                // Skins
              || entry.resource_type == ResourceType::SkinTone.to_u32().unwrap()
-                // I should include objects while I'm at it.
+                // Objects, if someone uses this for that.
              || entry.resource_type == ResourceType::OBJD.to_u32().unwrap()
+                // Patterns, but this gives too many false positives.
+             // || entry.resource_type == ResourceType::XMLResource.to_u32().unwrap()
             }).map(|entry| (entry.resource_type, entry.resource_group, entry.instance)),
     )
 }
