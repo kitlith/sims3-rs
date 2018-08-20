@@ -14,14 +14,14 @@ use num_traits::ToPrimitive;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
-fn filter_tgi_into_map(package: &DBPF<'_>) -> HashSet<(u32, u32, u64)> {
+fn filter_tgi_into_map(package: &DBPF<'_>, merged: bool) -> HashSet<(u32, u32, u64)> {
     //println!("DBPF Ver. {}.{}", package.major, package.minor);
     // TODO: Use rayon?
-    HashSet::from_iter(
+    let tgi_set = HashSet::from_iter(
         package
             .files
             .iter()
-            .filter(|entry| { // TODO: Find patterns as well.
+            .filter(|entry| {
                 // Clothing, hair, etc.
                 entry.resource_type == ResourceType::CASP.to_u32().unwrap()
                 // Sliders
@@ -30,10 +30,22 @@ fn filter_tgi_into_map(package: &DBPF<'_>) -> HashSet<(u32, u32, u64)> {
              || entry.resource_type == ResourceType::SkinTone.to_u32().unwrap()
                 // Objects, if someone uses this for that.
              || entry.resource_type == ResourceType::OBJD.to_u32().unwrap()
-                // Patterns, but this gives too many false positives.
-             // || entry.resource_type == ResourceType::XMLResource.to_u32().unwrap()
+                // Patterns -- but only if this is a merged package that I'm searching.
+                // Clothing has duplicates, so unless this is the package I'm searching I only
+                // want to see it if there's nothing else.
+             || (merged && entry.resource_type == ResourceType::XMLResource.to_u32().unwrap())
             }).map(|entry| (entry.resource_type, entry.resource_group, entry.instance)),
-    )
+    );
+
+    if !tgi_set.is_empty() {
+        tgi_set
+    } else { // If there's nothing else of interest, now pattern XMLs are interesting.
+        HashSet::from_iter(
+            package.files.iter()
+                .filter(|entry| entry.resource_type == ResourceType::XMLResource.to_u32().unwrap())
+                .map(|entry| (entry.resource_type, entry.resource_group, entry.instance))
+        )
+    }
 }
 
 fn main() -> Result<(), scroll::Error> {
@@ -52,7 +64,7 @@ fn main() -> Result<(), scroll::Error> {
         // *PLEASE* don't modify the file behind my back.
         let mem = File::open(Path::new(&args[1])).and_then(|f| unsafe { Mmap::map(&f) })?;
         let merged = DBPF::new(&mem)?;
-        find = filter_tgi_into_map(&merged);
+        find = filter_tgi_into_map(&merged, true);
     }
 
     WalkDir::new(&args[2])
@@ -67,7 +79,7 @@ fn main() -> Result<(), scroll::Error> {
             let mem = File::open(e.path()).and_then(|f| unsafe { Mmap::map(&f) })
                             .expect("Failed to open file!");
             let package = DBPF::new(&mem).expect("Failed to parse DBPF!");
-            let hashes = filter_tgi_into_map(&package);
+            let hashes = filter_tgi_into_map(&package, false);
             let intersection: HashSet<_> = find.intersection(&hashes).collect();
             if !intersection.is_empty() {
                 // println!("{}: {:X?}", e.file_name().to_string_lossy(), intersection);
