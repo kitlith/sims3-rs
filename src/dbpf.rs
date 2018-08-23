@@ -47,14 +47,16 @@ impl<'a> ctx::TryFromCtx<'a, IndexType> for DBPFIndex {
             data.resource_group = src.gread_with(offset, LE)?;
         }
         if (mask & (1 << 2)) != 0 {
-            // instance_lo
-            let field: u32 = src.gread_with(offset, LE)?;
-            data.instance = (data.instance & 0x0000FFFF) | (field as u64);
-        }
-        if (mask & (1 << 3)) != 0 {
             // instance_hi
             let field: u32 = src.gread_with(offset, LE)?;
-            data.instance = (data.instance & 0xFFFF0000) | ((field as u64) << 32);
+            data.instance = (data.instance & (u32::max_value() as u64)) // keep only the low half
+                          | ((field as u64) << 32); // replace the high half
+        }
+        if (mask & (1 << 3)) != 0 {
+            // instance_lo
+            let field: u32 = src.gread_with(offset, LE)?;
+            data.instance = (data.instance & ((u32::max_value() as u64) << 32)) // keep only the high half
+                          | (field as u64); // replace the low half
         }
         if (mask & (1 << 4)) != 0 {
             data.chunk_offset = src.gread_with::<u32>(offset, LE)? as usize;
