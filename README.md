@@ -19,9 +19,13 @@ CC Magic. If this is not the case, you can change
 to your own custom content path in the batch file.
 
 ### Limitations
-For the moment, it can not find patterns on sims. It has not been tested with
-any kind of merged package file other than sim package files. Please feel free
-to test this and leave an issue report if you find issues with it!
+This tool has not been tested with any kind of merged package file other than
+exported sim package files. Please feel free to test this and leave an issue
+report if you find any issues with it!
+
+Patterns have a known possible false-positive case:
+If a pattern is used on a piece of clothing AND installed separately,
+then the pattern will be found even if only the clothing was in the merged file.
 
 ## `dump_package_pngs`
 This tool is designed to extract all png images from a package file.

@@ -6,6 +6,7 @@ version = "0.1.0"
 authors = ["Kitlith <kitlith@kitl.pw>"]
 edition = '2018'
 
+# some of these are only for the binaries...
 [dependencies]
 scroll = "0.9"
 scroll_derive = "*"
@@ -20,5 +21,6 @@ byteorder = "1"
 lazy-init = "0.3.0"
 rayon = "1.0.2"
 lazy_static = "1.1.0"
+structopt = "0.2.10"
 
 [dev-dependencies]
