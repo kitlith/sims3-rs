@@ -1,7 +1,11 @@
-// TODO: What should I do with this? I'm just making this public for now.
+// TODO: What should I do with these? I'm just making this public for now.
 pub mod nmap;
+pub mod casp;
 
-use num_traits::ToPrimitive;
+//use num_traits::ToPrimitive;
+use scroll::ctx::TryFromCtx;
+use std::convert::TryInto;
+use scroll::Pread;
 
 // TODO: bring in ALL resource types.
 //       Perhaps name them a bit better/more consistently as well?
@@ -122,9 +126,9 @@ impl Default for ResourceType {
 
 lazy_static! {
     static ref PNG_RESOURCES: [u32; 41] = [
-        ResourceType::SimSNAPUnk.to_u32().unwrap(),
-        ResourceType::SimSNAPSmall.to_u32().unwrap(),
-        ResourceType::SimSNAPLarge.to_u32().unwrap(),
+        ResourceType::SimSNAPUnk as u32,
+        ResourceType::SimSNAPSmall as u32,
+        ResourceType::SimSNAPLarge as u32,
         0x0580A2B4,
         0x0580A2B5,
         0x0580A2B6, // THUM
@@ -137,36 +141,113 @@ lazy_static! {
         0x05B1B524,
         0x05B1B525,
         0x05B1B526, // AllThumbnails.package
-        ResourceType::TWNI.to_u32().unwrap(),
+        ResourceType::TWNI as u32,
         0x2653E3C8,
         0x2653E3C9,
         0x2653E3CA, // AllThumbnails.package
         0x2D4284F0,
         0x2D4284F1,
         0x2D4284F2, // AllThumbnails.package
-        ResourceType::OBJIconSmall.to_u32().unwrap(),
-        ResourceType::OBJIconMedium.to_u32().unwrap(),
-        ResourceType::OBJIconLarge.to_u32().unwrap(),
-        ResourceType::OBJIconXLarge.to_u32().unwrap(),
-        // ResourceType::UIImageTGA.to_u32().unwrap(),
-        ResourceType::UIImagePNG.to_u32().unwrap(),
-        ResourceType::TravelSNAP.to_u32().unwrap(),
+        ResourceType::OBJIconSmall as u32,
+        ResourceType::OBJIconMedium as u32,
+        ResourceType::OBJIconLarge as u32,
+        ResourceType::OBJIconXLarge as u32,
+        // ResourceType::UIImageTGA as u32,
+        ResourceType::UIImagePNG as u32,
+        ResourceType::TravelSNAP as u32,
         0x5DE9DBA0,
         0x5DE9DBA1,
         0x5DE9DBA2, // AllThumbnails.package
         0x626F60CC,
         0x626F60CD,
         0x626F60CE, // CasThumbnails.package
-        ResourceType::FamilySNAPSmall.to_u32().unwrap(),
-        ResourceType::FamilySNAPMedium.to_u32().unwrap(),
-        ResourceType::FamilySNAPLarge.to_u32().unwrap(),
-        ResourceType::LotIconSmall.to_u32().unwrap(),
-        ResourceType::LotIconMedium.to_u32().unwrap(),
-        ResourceType::LotIconLarge.to_u32().unwrap(),
-        ResourceType::ColorThumb.to_u32().unwrap(),
+        ResourceType::FamilySNAPSmall as u32,
+        ResourceType::FamilySNAPMedium as u32,
+        ResourceType::FamilySNAPLarge as u32,
+        ResourceType::LotIconSmall as u32,
+        ResourceType::LotIconMedium as u32,
+        ResourceType::LotIconLarge as u32,
+        ResourceType::ColorThumb as u32,
     ];
 }
 
 pub fn resource_is_png(resource: u32) -> bool {
     PNG_RESOURCES.iter().any(|&x| x == resource)
+}
+
+struct TaggedUTF16<LengthT, Endian>(String, std::marker::PhantomData<(LengthT, Endian)>);
+
+impl<'a, LengthT, Endian> TryFromCtx<'a> for TaggedUTF16<LengthT, Endian>
+    where LengthT: TryInto<usize, Error = std::num::TryFromIntError>
+           + TryFromCtx<'a, Error = scroll::Error, Size = usize>
+           + 'a,
+          Endian: byteorder::ByteOrder + 'a
+{
+    type Error = scroll::Error;
+    type Size = usize;
+    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, Self::Size), Self::Error> {
+        let offset = &mut 0usize;
+        let length: usize = src.gread::<LengthT>(offset)?.try_into().unwrap();
+
+        let mut data = vec![0u16; length/2];
+        Endian::read_u16_into(&src[*offset..*offset+length], &mut data);
+
+        Ok((String::from_utf16_lossy(&data).into(), *offset+length))
+    }
+}
+
+impl<LengthT, Endian> From<TaggedUTF16<LengthT,Endian>> for String {
+    fn from(src: TaggedUTF16<LengthT,Endian>) -> Self {
+        src.0
+    }
+}
+
+impl<LengthT, Endian> From<String> for TaggedUTF16<LengthT, Endian> {
+    fn from(src: String) -> Self {
+        TaggedUTF16(src, std::marker::PhantomData)
+    }
+}
+
+struct LengthData<Data, Length>(Data, std::marker::PhantomData<Length>);
+
+impl <'a, Data, Length> TryFromCtx<'a> for LengthData<Data, Length>
+    where Data: TryFromCtx<'a, Size = usize> + 'a,
+          Length: TryInto<usize, Error = std::num::TryFromIntError>
+                + TryFromCtx<'a, Size = usize> + 'a,
+          scroll::Error: std::convert::From<<Data as scroll::ctx::TryFromCtx<'a>>::Error>
+                       + std::convert::From<<Length as scroll::ctx::TryFromCtx<'a>>::Error>,
+          <Data as TryFromCtx<'a>>::Error: std::convert::From<scroll::Error>,
+          <Length as TryFromCtx<'a>>::Error: std::convert::From<scroll::Error> {
+
+    type Error = scroll::Error;
+    type Size = usize;
+    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, Self::Size), Self::Error> {
+        let read = &mut 0usize;
+        let length: usize = src.gread::<Length>(read)?.try_into().unwrap();
+
+        Ok((LengthData((&src[*read..*read+length]).pread(0)?, std::marker::PhantomData), *read))
+    }
+}
+
+// Reads an entire buffer as a UTF-16 string. maybe use StrCtx from scroll in the future?
+struct UTF16<Endian>(String, std::marker::PhantomData<Endian>);
+
+impl<'a, Endian> TryFromCtx<'a> for UTF16<Endian> where Endian: byteorder::ByteOrder + 'a {
+    type Error = scroll::Error;
+    type Size = usize;
+    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, Self::Size), Self::Error> {
+        if src.len() % 2 != 0 {
+            return Err(scroll::Error::Custom("Length of utf-16 string is not a multiple of 2!".to_owned()));
+        }
+
+        let mut data = vec![0u16; src.len()/2];
+        Endian::read_u16_into(src, &mut data);
+        Ok((UTF16(String::from_utf16_lossy(&data).into(), std::marker::PhantomData), src.len()))
+    }
+}
+
+impl<Length, Endian> From<LengthData<UTF16<Endian>, Length>> for String {
+    fn from(src: LengthData<UTF16<Endian>, Length>) -> Self {
+        (src.0).0
+    }
 }

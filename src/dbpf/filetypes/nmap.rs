@@ -1,9 +1,9 @@
 use super::ResourceType;
 use crate::dbpf;
-use crate::dbpf::DBPF;
-use num_traits::ToPrimitive;
+use crate::dbpf::DBPFEntry;
 use scroll::{ctx, Pread};
 use std::collections::BTreeMap;
+use std::iter::Iterator;
 
 struct NameMapEntry {
     pub instance: u64,
@@ -27,29 +27,27 @@ impl<'a> ctx::TryFromCtx<'a, ()> for NameMapEntry {
     }
 }
 
-// TODO: This should move into dbpf::filetypes::nmap
 pub fn gather_names_into(
-    package: &DBPF<'_>,
+    entry: &DBPFEntry<'_>,
     name_map: &mut BTreeMap<u64, String>,
 ) -> Result<(), scroll::Error> {
-    package.files.iter()
-    .filter(|entry| entry.resource_type == ResourceType::NMAP.to_u32().unwrap())
-    .flat_map(|entry| {
-        let mut offset = 4;
-        // let version: u32 = chunk.pread(0); // We could check the value, but... not relevant rn.
-        let count: usize = entry.data().gread::<u32>(&mut offset).expect("Failed to read count!") as usize;
-        let mut names: Vec<dbpf::filetypes::nmap::NameMapEntry> = Vec::with_capacity(count);
 
-        unsafe { names.set_len(count); }
-        // references are now uninitialized!
-        if let Err(_) = entry.data().gread_inout(&mut offset, &mut names) {
-            println!("Failed to read name map!");
-            names.truncate(0);
-        }
-        // Now it's all initialized, or it's empty because an error occured.
-        // TODO: Pass error through map?
-        names
-    }).for_each(|dbpf::filetypes::nmap::NameMapEntry { instance, name }| {
+    if entry.resource_type != ResourceType::NMAP as u32 {
+        return Err(scroll::Error::Custom("Not an NMAP tag.".to_string()))
+    }
+
+    let mut offset = 4;
+    // let version: u32 = chunk.pread(0); // We could check the value, but... not relevant rn.
+    let count: usize = entry.data().gread::<u32>(&mut offset).expect("Failed to read count!") as usize;
+    let mut names: Vec<dbpf::filetypes::nmap::NameMapEntry> = Vec::with_capacity(count);
+
+    unsafe {
+        names.set_len(count); // Uninitialized Strings!
+        entry.data().gread_inout(&mut offset, &mut names)?;
+        // Now either stuff is initialized, or an error was returned.
+    }
+
+    names.into_iter().for_each(|dbpf::filetypes::nmap::NameMapEntry { instance, name }| {
         if let Some(old) = name_map.insert(instance, name) {
             println!("Name Table Conflict for instance {:#08X}", instance);
             println!("    Old: {}", old);

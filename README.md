@@ -7,6 +7,22 @@ This tool is designed for finding custom content on sims exported from the game,
 but it may work with other types of merged package files in the future.
 
 ### Usage
+```
+find_merged_cc 0.2.0
+Kitlith <kitlith@kitl.pw>
+
+USAGE:
+    find_merged_cc [FLAGS] <PACKAGE> <DIR>...
+
+FLAGS:
+    -v, --full       Print full paths instead of just the package filenames
+    -h, --help       Prints help information
+    -V, --version    Prints version information
+
+ARGS:
+    <PACKAGE>    Merged file that contains custom content
+    <DIR>...     Directories to search for custom content in
+```
 Example: `find_merged_cc.exe my_sim.package "path/to/CC Magic/Content/Packages"`
 
 Additionally, a batch file `find_merged_cc.bat` is provided so that you can drag
@@ -48,11 +64,10 @@ hard to read and may cause issues if two images share the same Instance ID but
 are of different Resource Types.
 
 ## `package_names`
-This tool is designed to extract a name map of names to Instance IDs.
+This tool tries to extract a name from a package file and then rename the package file to match.
 
-WARNING: This tool is completely untested, and will most likely not remain in
-the future. It is useless in its current state. However, I wanted to make sure
-to keep the code around for the future. Don't use this!
+WARNING: This tool was created for a specific purpose, maybe experimentation or something.
+I don't remember. I can work with you if you want to make it better or more useful.
 
 # Developers
 So, this was designed to be a rust library for doing stuff with sims3 package

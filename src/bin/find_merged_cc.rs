@@ -14,6 +14,31 @@ use memmap::Mmap;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
+// TODO: is packageid under dependencyList ever not going to be a 128 bit number?
+// What about other languages?
+// static ADDON_DEPS: phf::Map<u128, &'static str> = phf_map! {
+//     0x062d99d500000000062d99d500000000u128 => "World Adventures Expansion",
+//     0x062d99de00000000062d99de00000000u128 => "Ambitions Expansion",
+//     0x062d99ed00000000062d99ed00000000u128 => "Late Night Expansion",
+//     0x062d9a0200000000062d9a0200000000u128 => "Generations Expansion",
+//     0x062d9a0300000000062d9a0300000000u128 => "Pets Expansion",
+//     0x062d9a0400000000062d9a0400000000u128 => "Showtime Expansion",
+//     0x062d9a0500000000062d9a0500000000u128 => "Supernatural Expansion",
+//     0x062d9a0600000000062d9a0600000000u128 => "Seasons Expansion",
+//     0x062d9a0600000000062d9a0600000000u128 => "University Expansion",
+//     0x062d9a0800000000062d9a0800000000u128 => "Island Paradise Expansion",
+//     0x062d9a0900000000062d9a0900000000u128 => "Into The Future Expansion",
+//     0x062d9a0900000000062d9a0900000000u128 => "High-End Loft Stuff Pack",
+//     0x062d9b1000000001062d9b1000000001u128 => "Fast Lane Stuff Pack",
+//     0x062d9b1100000001062d9b1100000001u128 => "Outdoor Living Stuff Pack",
+//     0x062d9b1200000001062d9b1200000001u128 => "Town Life Stuff Pack",
+//     0x062d9b1300000001062d9b1300000001u128 => "Master Suite Stuff Pack",
+//     0x062d9b1400000001062d9b1400000001u128 => "Katy Perry's Sweet Treats Stuff Pack",
+//     0x062d9b1500000001062d9b1500000001u128 => "Diesel Stuff Pack",
+//     0x062d9b1600000001062d9b1600000001u128 => "70's, 80's and 90's Stuff Pack",
+//     0x062d9b1700000001062d9b1700000001u128 => "Movie Stuff Pack"
+// };
+
 fn filter_tgi_into_map(package: &DBPF<'_>, merged: bool) -> HashSet<(u32, u32, u64)> {
     //println!("DBPF Ver. {}.{}", package.major, package.minor);
     // TODO: Use rayon?

@@ -2,8 +2,9 @@ pub mod filetypes;
 
 use crate::refpack;
 use lazy_init::LazyTransform;
-use scroll::{ctx, Pread, LE};
+use scroll::{ctx, Pread, Pwrite, LE};
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 enum IndexType {
@@ -79,7 +80,57 @@ impl<'a> ctx::TryFromCtx<'a, IndexType> for DBPFIndex {
     }
 }
 
-#[derive(Debug, PartialEq, Pread, Pwrite)]
+impl ctx::TryIntoCtx<IndexType> for DBPFIndex {
+    type Error = scroll::Error;
+    type Size = usize;
+    fn try_into_ctx(self, dest: &mut [u8], ctx: IndexType) -> Result<Self::Size, Self::Error> {
+        let mask: u8;
+        match ctx {
+            IndexType::IndexHeader(m) => mask = m,
+            IndexType::IndexEntry(m, _) => mask = !m // TODO: check that the data does match between template and entry?
+        }
+        let size: usize = mask.count_ones() as usize * std::mem::size_of::<u32>();
+        let dest = &mut dest[..size];
+
+        let offset = &mut 0;
+        if (mask & (1 << 0)) != 0 {
+            dest.gwrite_with::<u32>(self.resource_type, offset, LE)?;
+        }
+        if (mask & (1 << 1)) != 0 {
+            dest.gwrite_with::<u32>(self.resource_group, offset, LE)?;
+        }
+        if (mask & (1 << 2)) != 0 {
+            // instance_hi
+            dest.gwrite_with::<u32>((self.instance >> 32) as u32, offset, LE)?;
+        }
+        if (mask & (1 << 3)) != 0 {
+            // instance_lo
+            dest.gwrite_with::<u32>(self.instance as u32, offset, LE)?;
+        }
+        if (mask & (1 << 4)) != 0 {
+            dest.gwrite_with::<u32>(self.chunk_offset as u32, offset, LE)?;
+        }
+        if (mask & (1 << 5)) != 0 {
+            // FIXME: this should probably really be an error instead of an assert.
+            assert!(self.filesize <= i32::max_value() as usize, "File is too large for format!");
+            let field: u32 = (self.filesize & 0x7FFFFFFF) as u32 | if self.unk1 {1 << 31} else {0};
+            dest.gwrite_with::<u32>(field, offset, LE)?;
+        }
+        if (mask & (1 << 6)) != 0 {
+            dest.gwrite_with::<u32>(self.memsize, offset, LE)?;
+        }
+        if (mask & (1 << 7)) != 0 {
+            let field: u32 = (self.unk2 as u32) << 16 | if self.compressed {0xFFFF} else {0};
+            dest.gwrite_with::<u32>(field, offset, LE)?;
+        }
+
+        assert_eq!(*offset, size, "Written size {} does not match size implied by mask ({})!", *offset, size);
+        Ok(size)
+    }
+}
+
+// 96 bytes in file.
+#[derive(Debug, PartialEq, Pread, Pwrite, Default)]
 struct DBPFHeader {
     magic: u32, // "DBPF"
     major: u32,
@@ -183,8 +234,97 @@ impl<'a> ctx::TryFromCtx<'a, ()> for DBPF<'a> {
     }
 }
 
+impl<'a> ctx::TryIntoCtx for DBPF<'a> {
+    type Error = scroll::Error;
+    type Size = usize;
+    fn try_into_ctx(self, dest: &mut [u8], _ctx: ()) -> Result<Self::Size, Self::Error> {
+        let mut header = DBPFHeader::default();
+        header.magic = 0x46504244;
+        header.major = self.major;
+        header.minor = self.minor;
+        assert!(self.files.len() <= u32::max_value() as usize);
+        header.index_entries = self.files.len() as u32;
+
+        let mut index_mask = 0xF7u8; // ignore position, will always be decompressed for now.
+        let first = &self.files[0];
+        for entry in &self.files[1..] {
+            if entry.resource_type != first.resource_type {
+                index_mask &= !(1 << 0);
+            }
+            if entry.resource_group != first.resource_group {
+                index_mask &= !(1 << 1);
+            }
+            if entry.instance != first.instance {
+                // FIXME: This is technically two different values...
+                index_mask &= !(0b11 << 2);
+            }
+            if entry.data().len() != first.data().len() || entry.unk1 != first.unk1 {
+                // FIXME: as above, except I'm not dealing with compression yet.
+                index_mask &= !(0b11 << 5);
+            }
+            if entry.unk2 != first.unk2 {
+                index_mask &= !(1 << 7);
+            }
+        }
+        let index_size = (index_mask.count_ones() + (!index_mask).count_ones() * header.index_entries) * std::mem::size_of::<u32>() as u32;
+        let (header_area, rest) = dest.split_at_mut(96);
+        let (index_area, file_area) = rest.split_at_mut(index_size as usize);
+
+        header.index_version = 3;
+        let mut index_offset = 0;
+        if self.files.len() != 0 {
+            header.index_size = index_size as u32;
+            header.index_position = 96; // located just after header.
+            index_area.gwrite::<u32>(index_mask as u32, &mut index_offset)?;
+            index_area.gwrite_with(DBPFIndex {
+                resource_type: self.files[0].resource_type,
+                resource_group: self.files[0].resource_group,
+                instance: self.files[0].instance,
+                chunk_offset: 0, // this should never be included in the index header.
+                filesize: self.files[0].data().len(),
+                unk1: self.files[0].unk1,
+                memsize: self.files[0].data().len() as u32,
+                compressed: false,
+                unk2: self.files[0].unk2,
+            }, &mut index_offset, IndexType::IndexHeader(index_mask))?;
+        } else {
+            header.index_size = 0;
+            header.index_position = 0;
+        }
+
+        header_area.pwrite(header, 0)?;
+        let mut file_offset: usize = 0;
+        for file in self.files {
+            index_area.gwrite_with(DBPFIndex {
+                resource_type: file.resource_type,
+                resource_group: file.resource_group,
+                instance: file.instance,
+                chunk_offset: (96 + index_size) as usize + file_offset,
+                filesize: file.data().len(),
+                unk1: file.unk1,
+                memsize: file.data().len() as u32,
+                compressed: false,
+                unk2: file.unk2,
+            }, &mut index_offset, IndexType::IndexEntry(index_mask, DBPFIndex::default()))?;
+            file_area.gwrite(file.data(), &mut file_offset)?;
+        }
+
+        Ok((96 + index_size) as usize + file_offset)
+    }
+}
+
 impl<'a> DBPF<'a> {
     pub fn new(mem: &'a [u8]) -> Result<DBPF, scroll::Error> {
         mem.pread::<DBPF>(0)
+    }
+
+    // instance -> name
+    pub fn gather_names(&self) -> Result<BTreeMap<u64, String>, scroll::Error> {
+        let mut map = BTreeMap::new();
+        self.files.iter()
+            .filter(|e| e.resource_type == filetypes::ResourceType::NMAP as u32)
+            .map(|e| filetypes::nmap::gather_names_into(e, &mut map))
+            .collect::<Result<_, scroll::Error>>()?;
+        Ok(map)
     }
 }
