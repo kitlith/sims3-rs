@@ -19,5 +19,9 @@ lazy-init = "0.5.0"
 rayon = "1.0.2"
 lazy_static = "1.1.0"
 structopt = "0.3"
+binrw = "0.11"
+memchr = "2.5"
+dont_disappear = "3.0.1"
+dirs = "5.0.0"
 
 [dev-dependencies]

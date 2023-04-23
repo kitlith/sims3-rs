@@ -43,6 +43,55 @@ Patterns have a known possible false-positive case:
 If a pattern is used on a piece of clothing AND installed separately,
 then the pattern will be found even if only the clothing was in the merged file.
 
+## `geom_tri_count`
+This tool is designed to figure out the triangle counts within a package file.
+It *will not* produce usable results when used with a package file that contains
+multiple pieces of custom content.
+
+### Usage
+```
+Usage: geom_tri_count [packages/directories]
+```
+
+You can provide multiple filenames and directories on the commandline,
+and all of them will be checked for package files, recursively.
+
+As the tool is designed for use w/ drag-and-drop, it'll display
+`Press any key to continue` when it is finished, so that the terminal window
+won't automatically close.
+
+### Example
+I have 4 package files in a folder called `packages`:
+ - agnelid_Butterflysims127af_12.7Kedit.package
+ - agnelid_NewseaMoonRiver_9.8KeditV1.package
+ - ChazyNewseaJ141SexyBombAFVerB.package
+ - PlumblobsPeggyzone122TFEF.package
+
+If I run `geom_tri_count.exe packages` (or drag-n-drop the packages folder onto `geom_tri_count.exe`)
+I get the following output:
+```
+agnelid_NewseaMoonRiver_9.8KeditV1.package -- Polys: [9825, 6857, 2788, 654]
+agnelid_Butterflysims127af_12.7Kedit.package -- Polys: [12776, 8970, 2751, 459]
+ChazyNewseaJ141SexyBombAFVerB.package -- Polys: [15277, 7051, 3852, 2197, 2, 1]
+PlumblobsPeggyzone122TFEF.package -- Polys: [24248, 24248, 24248, 24248] (16 submeshes)
+Press any key to continue
+```
+and the following contents in `sims3_geom_poly_count.csv` on my Desktop. (this file is overwritten on every run!)
+```
+Filename, Max Vertices, Max Polygons
+"agnelid_NewseaMoonRiver_9.8KeditV1.package", 8624, 9825
+"agnelid_Butterflysims127af_12.7Kedit.package", 9076, 12776
+"ChazyNewseaJ141SexyBombAFVerB.package", 11356, 15277
+"PlumblobsPeggyzone122TFEF.package", 16870, 24248
+```
+which should render as the following table in the spreadsheet application of your choice:
+| Filename                                     | Max Vertices | Max Polygons |
+|----------------------------------------------|-------------:|-------------:|
+| agnelid_NewseaMoonRiver_9.8KeditV1.package   |         8624 |         9825 |
+| agnelid_Butterflysims127af_12.7Kedit.package |         9076 |        12776 |
+| ChazyNewseaJ141SexyBombAFVerB.package        |        11356 |        15277 |
+| PlumblobsPeggyzone122TFEF.package            |        16870 |        24248 |
+
 ## `dump_package_pngs`
 This tool is designed to extract all png images from a package file.
 
