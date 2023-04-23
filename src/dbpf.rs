@@ -1,6 +1,5 @@
 pub mod filetypes;
 
-use crate::refpack;
 use lazy_init::LazyTransform;
 use scroll::{ctx, Pread, Pwrite, LE};
 use std::borrow::Cow;
@@ -157,10 +156,11 @@ pub struct DBPFEntry<'a> {
 }
 
 impl<'a> DBPFEntry<'a> {
+    // FIXME: should return Result instead of just panicing.
     pub fn data(&self) -> &[u8] {
         &self
             .data
-            .get_or_create(|mem| Cow::Owned(refpack::decompress(mem).unwrap()))
+            .get_or_create(|mem| Cow::Owned(refpack::easy_decompress::<refpack::format::TheSims34>(mem).unwrap()))
     }
 }
 
@@ -206,18 +206,15 @@ impl<'a> ctx::TryFromCtx<'a, ()> for DBPF<'a> {
                         data.get_or_create(|mem| Cow::Borrowed(mem));
                     }
 
-                    Ok(DBPFEntry {
+                    DBPFEntry {
                         resource_type: index.resource_type,
                         resource_group: index.resource_group,
                         instance: index.instance,
                         unk1: index.unk1,
                         unk2: index.unk2,
                         data,
-                    })
-                }).collect::<Result<_, _>>()
-                .map_err(|err: refpack::decompress::Error| {
-                    scroll::Error::Custom(err.to_string())
-                })?;
+                    }
+                }).collect::<Vec<_>>();
         } else {
             files = Vec::with_capacity(0);
         }
