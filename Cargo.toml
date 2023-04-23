@@ -2,23 +2,22 @@
 name = "sims3_rs"
 version = "0.2.0"
 authors = ["Kitlith <kitlith@kitl.pw>"]
-edition = '2018'
+edition = '2021'
 
 # some of these are only for the binaries...
 [dependencies]
-scroll = "0.9"
-scroll_derive = "*"
-memmap = "0.6.2"
+scroll = {version = "0.11", features = ["derive"] }
+memmap = "0.7"
 num-traits = "0.2"
-num-derive = "0.2"
-sha2 = "0.7"
+num-derive = "0.3"
+sha2 = "0.10"
 walkdir = "2"
-generic-array = "0.11.1"
-quick-error = "1.2.2"
+generic-array = "0.14"
+quick-error = "2.0"
 byteorder = "1"
-lazy-init = "0.3.0"
+lazy-init = "0.5.0"
 rayon = "1.0.2"
 lazy_static = "1.1.0"
-structopt = "0.2.10"
+structopt = "0.3"
 
 [dev-dependencies]

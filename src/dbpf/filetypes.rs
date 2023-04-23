@@ -1,6 +1,6 @@
 // TODO: What should I do with these? I'm just making this public for now.
 pub mod nmap;
-pub mod casp;
+//pub mod casp;
 
 //use num_traits::ToPrimitive;
 use scroll::ctx::TryFromCtx;
@@ -179,13 +179,12 @@ struct TaggedUTF16<LengthT, Endian>(String, std::marker::PhantomData<(LengthT, E
 
 impl<'a, LengthT, Endian> TryFromCtx<'a> for TaggedUTF16<LengthT, Endian>
     where LengthT: TryInto<usize, Error = std::num::TryFromIntError>
-           + TryFromCtx<'a, Error = scroll::Error, Size = usize>
+           + TryFromCtx<'a, Error = scroll::Error>
            + 'a,
           Endian: byteorder::ByteOrder + 'a
 {
     type Error = scroll::Error;
-    type Size = usize;
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, Self::Size), Self::Error> {
+    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
         let offset = &mut 0usize;
         let length: usize = src.gread::<LengthT>(offset)?.try_into().unwrap();
 
@@ -211,17 +210,16 @@ impl<LengthT, Endian> From<String> for TaggedUTF16<LengthT, Endian> {
 struct LengthData<Data, Length>(Data, std::marker::PhantomData<Length>);
 
 impl <'a, Data, Length> TryFromCtx<'a> for LengthData<Data, Length>
-    where Data: TryFromCtx<'a, Size = usize> + 'a,
+    where Data: TryFromCtx<'a> + 'a,
           Length: TryInto<usize, Error = std::num::TryFromIntError>
-                + TryFromCtx<'a, Size = usize> + 'a,
+                + TryFromCtx<'a> + 'a,
           scroll::Error: std::convert::From<<Data as scroll::ctx::TryFromCtx<'a>>::Error>
                        + std::convert::From<<Length as scroll::ctx::TryFromCtx<'a>>::Error>,
           <Data as TryFromCtx<'a>>::Error: std::convert::From<scroll::Error>,
           <Length as TryFromCtx<'a>>::Error: std::convert::From<scroll::Error> {
 
     type Error = scroll::Error;
-    type Size = usize;
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, Self::Size), Self::Error> {
+    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
         let read = &mut 0usize;
         let length: usize = src.gread::<Length>(read)?.try_into().unwrap();
 
@@ -234,8 +232,7 @@ struct UTF16<Endian>(String, std::marker::PhantomData<Endian>);
 
 impl<'a, Endian> TryFromCtx<'a> for UTF16<Endian> where Endian: byteorder::ByteOrder + 'a {
     type Error = scroll::Error;
-    type Size = usize;
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, Self::Size), Self::Error> {
+    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
         if src.len() % 2 != 0 {
             return Err(scroll::Error::Custom("Length of utf-16 string is not a multiple of 2!".to_owned()));
         }

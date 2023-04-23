@@ -12,8 +12,7 @@ struct NameMapEntry {
 
 impl<'a> ctx::TryFromCtx<'a, ()> for NameMapEntry {
     type Error = scroll::Error;
-    type Size = usize;
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, Self::Size), Self::Error> {
+    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
         let instance: u64 = src.pread(0)?;
         let length = src.pread::<u32>(8)? as usize;
         let name: &str = src.pread_with(12, ctx::StrCtx::Length(length))?;

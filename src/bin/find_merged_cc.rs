@@ -88,7 +88,8 @@ struct Opt {
     #[structopt(
         name = "DIR",
         parse(from_os_str),
-        raw(required = "true", min_values = "1")
+        required = true,
+        min_values = 1
     )]
     search_dirs: Vec<PathBuf>,
 }

@@ -11,15 +11,15 @@ quick_error! {
     pub enum Error {
         /// Expected another byte, but none found.
         ExpectedAnotherByte {
-            description("Expected another byte, found none.")
+            display("Expected another byte, found none.")
         }
         /// Deduplication offset out of bounds (not in buffer).
         OffsetOutOfBounds {
-            description("The offset to copy is not contained in the decompressed buffer.")
+            display("The offset to copy is not contained in the decompressed buffer.")
         }
 
         InvalidMagic {
-            description("Invalid compression magic.")
+            display("Invalid compression magic.")
         }
     }
 }

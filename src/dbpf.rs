@@ -27,8 +27,7 @@ struct DBPFIndex {
 
 impl<'a> ctx::TryFromCtx<'a, IndexType> for DBPFIndex {
     type Error = scroll::Error;
-    type Size = usize;
-    fn try_from_ctx(src: &'a [u8], ctx: IndexType) -> Result<(Self, Self::Size), Self::Error> {
+    fn try_from_ctx(src: &'a [u8], ctx: IndexType) -> Result<(Self, usize), Self::Error> {
         let mut data = DBPFIndex::default();
         let mask: u8;
         match ctx {
@@ -82,8 +81,7 @@ impl<'a> ctx::TryFromCtx<'a, IndexType> for DBPFIndex {
 
 impl ctx::TryIntoCtx<IndexType> for DBPFIndex {
     type Error = scroll::Error;
-    type Size = usize;
-    fn try_into_ctx(self, dest: &mut [u8], ctx: IndexType) -> Result<Self::Size, Self::Error> {
+    fn try_into_ctx(self, dest: &mut [u8], ctx: IndexType) -> Result<usize, Self::Error> {
         let mask: u8;
         match ctx {
             IndexType::IndexHeader(m) => mask = m,
@@ -175,8 +173,7 @@ pub struct DBPF<'a> {
 
 impl<'a> ctx::TryFromCtx<'a, ()> for DBPF<'a> {
     type Error = scroll::Error;
-    type Size = usize;
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, Self::Size), Self::Error> {
+    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
         let header: DBPFHeader = src.pread(0)?;
         // "DBPF"
         if header.magic != 0x46504244 {
@@ -236,8 +233,7 @@ impl<'a> ctx::TryFromCtx<'a, ()> for DBPF<'a> {
 
 impl<'a> ctx::TryIntoCtx for DBPF<'a> {
     type Error = scroll::Error;
-    type Size = usize;
-    fn try_into_ctx(self, dest: &mut [u8], _ctx: ()) -> Result<Self::Size, Self::Error> {
+    fn try_into_ctx(self, dest: &mut [u8], _ctx: ()) -> Result<usize, Self::Error> {
         let mut header = DBPFHeader::default();
         header.magic = 0x46504244;
         header.major = self.major;
