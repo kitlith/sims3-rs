@@ -69,6 +69,19 @@ This tool tries to extract a name from a package file and then rename the packag
 WARNING: This tool was created for a specific purpose, maybe experimentation or something.
 I don't remember. I can work with you if you want to make it better or more useful.
 
+## `extract`
+This tool extracts a single item from a DBPF into a separate file.
+It is something I threw together to be able to inspect an item from within a hex editor,
+for format exploration (because of unclear documentation).
+
+### Usage
+
+```
+Usage: extract <package> <T:G:I> <output>
+```
+
+Example: `extract.exe PlumblobsPeggyzone122TFEF.package 15a1849:cb05b3:a0bad0bee0028400 weird.geom`
+
 # Developers
 So, this was designed to be a rust library for doing stuff with sims3 package
 files. However, I have not published it on crates.io or anything because I want
