@@ -312,12 +312,12 @@ impl<'a> DBPF<'a> {
     }
 
     // instance -> name
-    pub fn gather_names(&self) -> Result<BTreeMap<u64, String>, scroll::Error> {
+    pub fn gather_names(&self) -> Result<BTreeMap<u64, String>, binrw::Error> {
         let mut map = BTreeMap::new();
         self.files.iter()
             .filter(|e| e.resource_type == filetypes::ResourceType::NMAP as u32)
             .map(|e| filetypes::nmap::gather_names_into(e, &mut map))
-            .collect::<Result<_, scroll::Error>>()?;
+            .collect::<Result<_, binrw::Error>>()?;
         Ok(map)
     }
 }

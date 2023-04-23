@@ -26,7 +26,7 @@ fn main() -> Result<(), scroll::Error> {
         let mem = File::open(package_path).and_then(|f| unsafe { Mmap::map(&f) })?;
         let package = DBPF::new(&mem)?;
 
-        name_map = package.gather_names()?;
+        name_map = package.gather_names().unwrap();
         package.files.iter()
             .filter(|e| e.resource_type == ResourceType::CASP.to_u32().unwrap()
                      || e.resource_type == ResourceType::OBJD.to_u32().unwrap()

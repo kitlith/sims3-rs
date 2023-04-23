@@ -1,58 +1,46 @@
 use super::ResourceType;
-use crate::dbpf;
 use crate::dbpf::DBPFEntry;
-use scroll::{ctx, Pread};
 use std::collections::BTreeMap;
-use std::iter::Iterator;
 
-struct NameMapEntry {
-    pub instance: u64,
-    pub name: String,
+use binrw::{binrw, BinRead, BinResult, io};
+
+use crate::util::{write_btreemap, LengthString};
+
+#[binrw]
+#[brw(magic = 1u32)] // version
+struct NMAPHeader {
+    count: u32,
 }
 
-impl<'a> ctx::TryFromCtx<'a, ()> for NameMapEntry {
-    type Error = scroll::Error;
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
-        let instance: u64 = src.pread(0)?;
-        let length = src.pread::<u32>(8)? as usize;
-        let name: &str = src.pread_with(12, ctx::StrCtx::Length(length))?;
-        Ok((
-            NameMapEntry {
-                instance,
-                name: name.to_string(),
-            },
-            12 + length,
-        ))
+impl TryFrom<usize> for NMAPHeader {
+    type Error = <u32 as TryFrom<usize>>::Error;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        Ok(NMAPHeader {
+            count: value.try_into()?,
+        })
     }
 }
 
-pub fn gather_names_into(
-    entry: &DBPFEntry<'_>,
-    name_map: &mut BTreeMap<u64, String>,
-) -> Result<(), scroll::Error> {
+#[binrw]
+pub struct NMAP {
+    #[br(temp)]
+    #[bw(try_calc = map.len().try_into() )]
+    header: NMAPHeader,
+    // TODO: allow HashMap?
+    #[br(parse_with = binrw::helpers::count(header.count as usize))]
+    #[bw(write_with = write_btreemap)]
+    map: BTreeMap<u64, LengthString>,
+}
 
+pub fn gather_names_into(entry: &DBPFEntry<'_>, name_map: &mut BTreeMap<u64, String>) -> BinResult<()> {
     if entry.resource_type != ResourceType::NMAP as u32 {
-        return Err(scroll::Error::Custom("Not an NMAP tag.".to_string()))
+        return Err(binrw::Error::AssertFail { pos: 0, message: "Not an NMAP tag.".to_string() });
     }
 
-    let mut offset = 4;
-    // let version: u32 = chunk.pread(0); // We could check the value, but... not relevant rn.
-    let count: usize = entry.data().gread::<u32>(&mut offset).expect("Failed to read count!") as usize;
-    let mut names: Vec<dbpf::filetypes::nmap::NameMapEntry> = Vec::with_capacity(count);
-
-    unsafe {
-        names.set_len(count); // Uninitialized Strings!
-        entry.data().gread_inout(&mut offset, &mut names)?;
-        // Now either stuff is initialized, or an error was returned.
-    }
-
-    names.into_iter().for_each(|dbpf::filetypes::nmap::NameMapEntry { instance, name }| {
-        if let Some(old) = name_map.insert(instance, name) {
-            println!("Name Table Conflict for instance {:#08X}", instance);
-            println!("    Old: {}", old);
-            //println!("    New: {}", name); // maybe clone?
-        }
-    });
+    let mut reader = io::Cursor::new(entry.data());
+    let nmap: NMAP = BinRead::read_le(&mut reader)?;
+    name_map.extend(nmap.map.into_iter().map(|(i, s)| (i, String::from_utf8_lossy(&s.inner).into_owned())));
 
     Ok(())
 }

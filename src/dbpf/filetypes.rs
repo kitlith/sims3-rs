@@ -3,9 +3,6 @@ pub mod nmap;
 //pub mod casp;
 
 //use num_traits::ToPrimitive;
-use scroll::ctx::TryFromCtx;
-use std::convert::TryInto;
-use scroll::Pread;
 
 // TODO: bring in ALL resource types.
 //       Perhaps name them a bit better/more consistently as well?
@@ -173,78 +170,4 @@ lazy_static! {
 
 pub fn resource_is_png(resource: u32) -> bool {
     PNG_RESOURCES.iter().any(|&x| x == resource)
-}
-
-struct TaggedUTF16<LengthT, Endian>(String, std::marker::PhantomData<(LengthT, Endian)>);
-
-impl<'a, LengthT, Endian> TryFromCtx<'a> for TaggedUTF16<LengthT, Endian>
-    where LengthT: TryInto<usize, Error = std::num::TryFromIntError>
-           + TryFromCtx<'a, Error = scroll::Error>
-           + 'a,
-          Endian: byteorder::ByteOrder + 'a
-{
-    type Error = scroll::Error;
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
-        let offset = &mut 0usize;
-        let length: usize = src.gread::<LengthT>(offset)?.try_into().unwrap();
-
-        let mut data = vec![0u16; length/2];
-        Endian::read_u16_into(&src[*offset..*offset+length], &mut data);
-
-        Ok((String::from_utf16_lossy(&data).into(), *offset+length))
-    }
-}
-
-impl<LengthT, Endian> From<TaggedUTF16<LengthT,Endian>> for String {
-    fn from(src: TaggedUTF16<LengthT,Endian>) -> Self {
-        src.0
-    }
-}
-
-impl<LengthT, Endian> From<String> for TaggedUTF16<LengthT, Endian> {
-    fn from(src: String) -> Self {
-        TaggedUTF16(src, std::marker::PhantomData)
-    }
-}
-
-struct LengthData<Data, Length>(Data, std::marker::PhantomData<Length>);
-
-impl <'a, Data, Length> TryFromCtx<'a> for LengthData<Data, Length>
-    where Data: TryFromCtx<'a> + 'a,
-          Length: TryInto<usize, Error = std::num::TryFromIntError>
-                + TryFromCtx<'a> + 'a,
-          scroll::Error: std::convert::From<<Data as scroll::ctx::TryFromCtx<'a>>::Error>
-                       + std::convert::From<<Length as scroll::ctx::TryFromCtx<'a>>::Error>,
-          <Data as TryFromCtx<'a>>::Error: std::convert::From<scroll::Error>,
-          <Length as TryFromCtx<'a>>::Error: std::convert::From<scroll::Error> {
-
-    type Error = scroll::Error;
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
-        let read = &mut 0usize;
-        let length: usize = src.gread::<Length>(read)?.try_into().unwrap();
-
-        Ok((LengthData((&src[*read..*read+length]).pread(0)?, std::marker::PhantomData), *read))
-    }
-}
-
-// Reads an entire buffer as a UTF-16 string. maybe use StrCtx from scroll in the future?
-struct UTF16<Endian>(String, std::marker::PhantomData<Endian>);
-
-impl<'a, Endian> TryFromCtx<'a> for UTF16<Endian> where Endian: byteorder::ByteOrder + 'a {
-    type Error = scroll::Error;
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
-        if src.len() % 2 != 0 {
-            return Err(scroll::Error::Custom("Length of utf-16 string is not a multiple of 2!".to_owned()));
-        }
-
-        let mut data = vec![0u16; src.len()/2];
-        Endian::read_u16_into(src, &mut data);
-        Ok((UTF16(String::from_utf16_lossy(&data).into(), std::marker::PhantomData), src.len()))
-    }
-}
-
-impl<Length, Endian> From<LengthData<UTF16<Endian>, Length>> for String {
-    fn from(src: LengthData<UTF16<Endian>, Length>) -> Self {
-        (src.0).0
-    }
 }
