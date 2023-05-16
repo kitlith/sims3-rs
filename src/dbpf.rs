@@ -1,322 +1,594 @@
 pub mod filetypes;
 
-use lazy_init::LazyTransform;
-use scroll::{ctx, Pread, Pwrite, LE};
-use std::borrow::Cow;
+use binrw::io::TakeSeekExt;
+use binrw::{binrw, io, BinRead, BinResult};
 use std::collections::BTreeMap;
+use std::io::Read;
+use std::marker::PhantomData;
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
-enum IndexType {
-    IndexHeader(u8),
-    IndexEntry(u8, DBPFIndex),
-}
+use bilge::prelude::*;
 
-#[derive(PartialEq, Eq, Clone, Copy, Default, Debug)]
-struct DBPFIndex {
-    resource_type: u32,
-    resource_group: u32, // TODO: Flags?
-    instance: u64,
-    chunk_offset: usize,
-    filesize: usize,
-    unk1: bool,
-    memsize: u32,
-    compressed: bool,
-    unk2: u16,
-}
+macro_rules! dbpf_index_entry {
+    (
+        $( #[$meta:meta] )*
+        $vis:vis struct $name:ident {
+            $(
+                $( #[$field_meta:meta] )*
+                $field_vis:vis $field_name:ident : $field_ty:ty
+            ),*
+            $(,)?
+        }
+    ) => {
+        ::paste::paste! {
+            #[bitsize(32)]
+            #[::binrw::binrw]
+            #[br(try_map = |b: u32| [<$name Mask>]::try_from(b))]
+            #[bw(map = |bf: &[<$name Mask>]| bf.value)]
+            #[derive(Copy, Clone, TryFromBits, DebugBits, Default)]
+            #[doc = concat!(
+                "Generated bitfield for [`", stringify!($name), "`].\n",
+                "\n",
+                "Each field corresponds to a field in [`", stringify!($name), "`] and [`", stringify!([<Partial $name>]), "`],\n",
+                "and controls whether that field is read or written at that time."
+            )]
+            struct [<$name Mask>] {
+                $(
+                    $field_name : bool
+                ),* ,
+                // HACK: bilge doesn't support unfilled structs
+                reserved: u24
+            }
 
-impl<'a> ctx::TryFromCtx<'a, IndexType> for DBPFIndex {
-    type Error = scroll::Error;
-    fn try_from_ctx(src: &'a [u8], ctx: IndexType) -> Result<(Self, usize), Self::Error> {
-        let mut data = DBPFIndex::default();
-        let mask: u8;
-        match ctx {
-            IndexType::IndexHeader(m) => mask = m,
-            IndexType::IndexEntry(m, template) => {
-                mask = !m;
-                data = template.clone();
+            impl [<$name Mask>] {
+                fn count_present(&self) -> u32 {
+                    0
+                    $(
+                        + self.$field_name() as u32
+                    )*
+                }
+            }
+
+            #[::binrw::binrw]
+            #[br(import(mask: [<$name Mask>]))]
+            #[derive(Clone, Default)]
+            #[doc = concat!(
+                "Generated 'partial' struct for [`", stringify!($name), "`].\n",
+                "\n",
+                "Each field corresponds to a field in [`", stringify!($name), "`], where each field's type is wrapped in [`Option`].\n",
+                "This is used to read/write the common/deduplicated items of the index."
+            )]
+            struct [<Partial $name>] {
+                $(
+                    #[br(if(mask.$field_name()))]
+                    $field_name : ::core::option::Option<$field_ty>
+                ),*
+            }
+
+            impl [<Partial $name>] {
+                fn calc_common_entries<'a>(mut iter: impl Iterator<Item=&'a $name>) -> Self {
+                    let mut common: Self = if let Some(i) = iter.next() {
+                        i.into()
+                    } else {
+                        return Self::default();
+                    };
+
+                    for entry in iter {
+                        $(
+                            if common.$field_name.map(|f| f == entry.$field_name).unwrap_or(false) {
+                                common.$field_name = None;
+                            }
+                        )*
+                    }
+
+                    common
+                }
+
+                fn calc_mask(&self) -> [<$name Mask>] {
+                    let mut res = [<$name Mask>]::default();
+                    $(
+                        res.[<set_ $field_name>](self.$field_name.is_some());
+                    )*
+                    res
+                }
+            }
+
+            #[::binrw::binrw]
+            $( #[$meta] )*
+            #[br(import(partial: /*&*/ [<Partial $name>]))]
+            #[bw(import(mask: [<$name Mask>]))]
+            #[doc = concat!(
+                "A full index entry.\n",
+                "\n",
+                "While reading, fields are copied from a [`", stringify!([<Partial $name>]), "`] passed as an argument,\n",
+                "and missing fields are read from the file.\n",
+                "\n",
+                "While writing, only the fields that are unset in the [`", stringify!([<$name Mask>]), "`] passed as an argument are written."
+            )]
+            $vis struct $name {
+                $(
+                    $( #[$field_meta] )*
+                    // Fill in fields from the common fields, and otherwise read them
+                    #[br(if(partial.$field_name.is_none(), partial.$field_name.unwrap()))]
+                    // Only write if the field is *not* in the common field mask
+                    #[bw(if(!mask.$field_name()))]
+                    $field_vis $field_name : $field_ty
+                ),*
+            }
+
+            impl From<&$name> for [<Partial $name>] {
+                fn from(value: &$name) -> Self {
+                    [<Partial $name>] {
+                        $(
+                            $field_name: Some(value.$field_name)
+                        ),*
+                    }
+                }
             }
         }
-
-        let offset = &mut 0;
-        if (mask & (1 << 0)) != 0 {
-            let raw_type = src.gread_with::<u32>(offset, LE)?;
-            data.resource_type = raw_type; // would use ResourceType, but there's too many unknowns.
-        }
-        if (mask & (1 << 1)) != 0 {
-            data.resource_group = src.gread_with(offset, LE)?;
-        }
-        if (mask & (1 << 2)) != 0 {
-            // instance_hi
-            let field: u32 = src.gread_with(offset, LE)?;
-            data.instance = (data.instance & (u32::max_value() as u64)) // keep only the low half
-                          | ((field as u64) << 32); // replace the high half
-        }
-        if (mask & (1 << 3)) != 0 {
-            // instance_lo
-            let field: u32 = src.gread_with(offset, LE)?;
-            data.instance = (data.instance & ((u32::max_value() as u64) << 32)) // keep only the high half
-                          | (field as u64); // replace the low half
-        }
-        if (mask & (1 << 4)) != 0 {
-            data.chunk_offset = src.gread_with::<u32>(offset, LE)? as usize;
-        }
-        if (mask & (1 << 5)) != 0 {
-            let field: u32 = src.gread_with(offset, LE)?;
-            data.filesize = (field & 0x7FFFFFFF) as usize;
-            data.unk1 = (field & 0x80000000) != 0;
-        }
-        if (mask & (1 << 6)) != 0 {
-            data.memsize = src.gread_with(offset, LE)?;
-        }
-        if (mask & (1 << 7)) != 0 {
-            let field: u32 = src.gread_with(offset, LE)?;
-            data.compressed = (field & 0xFFFF) == 0xFFFF;
-            data.unk2 = (field >> 16) as u16;
-        }
-
-        Ok((data, *offset))
     }
 }
 
-impl ctx::TryIntoCtx<IndexType> for DBPFIndex {
-    type Error = scroll::Error;
-    fn try_into_ctx(self, dest: &mut [u8], ctx: IndexType) -> Result<usize, Self::Error> {
-        let mask: u8;
-        match ctx {
-            IndexType::IndexHeader(m) => mask = m,
-            IndexType::IndexEntry(m, _) => mask = !m // TODO: check that the data does match between template and entry?
-        }
-        let size: usize = mask.count_ones() as usize * std::mem::size_of::<u32>();
-        let dest = &mut dest[..size];
+#[bitsize(32)]
+#[derive(Clone, Copy, PartialEq, FromBits, DebugBits)]
+#[binrw]
+#[br(map = |b: u32| b.into())]
+#[bw(map = |bf: &IndexFilesize| bf.value)]
+struct IndexFilesize {
+    filesize: u31,
+    unk1: bool,
+}
 
-        let offset = &mut 0;
-        if (mask & (1 << 0)) != 0 {
-            dest.gwrite_with::<u32>(self.resource_type, offset, LE)?;
-        }
-        if (mask & (1 << 1)) != 0 {
-            dest.gwrite_with::<u32>(self.resource_group, offset, LE)?;
-        }
-        if (mask & (1 << 2)) != 0 {
-            // instance_hi
-            dest.gwrite_with::<u32>((self.instance >> 32) as u32, offset, LE)?;
-        }
-        if (mask & (1 << 3)) != 0 {
-            // instance_lo
-            dest.gwrite_with::<u32>(self.instance as u32, offset, LE)?;
-        }
-        if (mask & (1 << 4)) != 0 {
-            dest.gwrite_with::<u32>(self.chunk_offset as u32, offset, LE)?;
-        }
-        if (mask & (1 << 5)) != 0 {
-            // FIXME: this should probably really be an error instead of an assert.
-            assert!(self.filesize <= i32::max_value() as usize, "File is too large for format!");
-            let field: u32 = (self.filesize & 0x7FFFFFFF) as u32 | if self.unk1 {1 << 31} else {0};
-            dest.gwrite_with::<u32>(field, offset, LE)?;
-        }
-        if (mask & (1 << 6)) != 0 {
-            dest.gwrite_with::<u32>(self.memsize, offset, LE)?;
-        }
-        if (mask & (1 << 7)) != 0 {
-            let field: u32 = (self.unk2 as u32) << 16 | if self.compressed {0xFFFF} else {0};
-            dest.gwrite_with::<u32>(field, offset, LE)?;
-        }
+dbpf_index_entry! {
+    struct IndexEntry {
+        resource_type: u32,
+        resource_group: u32, // TODO: Flags?
+        instance_hi: u32,
+        instance_lo: u32,
+        chunk_offset: u32,
+        filesize_unk1: IndexFilesize,
+        memsize: u32,
+        compressed_unk2: (u16, u16),
+    }
+}
 
-        assert_eq!(*offset, size, "Written size {} does not match size implied by mask ({})!", *offset, size);
-        Ok(size)
+#[derive(Debug, Clone)]
+pub enum ChunkHandle<'brand> {
+    Uncompressed {
+        offset: u32,
+        filesize: u31,
+        brand: generativity::Id<'brand>,
+    },
+    Compressed {
+        offset: u32,
+        filesize: u31,
+        memsize: u32,
+        decompressed: Option<Vec<u8>>, // can be cleared
+        brand: generativity::Id<'brand>,
+    },
+    Dirty {
+        decompressed: Vec<u8>,
+        should_compress: bool,
+        // the brand is ditched in the dirty state,
+        // will make it required to read from the file
+    },
+}
+
+impl ChunkHandle<'_> {
+    pub fn memsize(&self) -> u32 {
+        match self {
+            ChunkHandle::Compressed { memsize, .. } => *memsize,
+            ChunkHandle::Uncompressed { filesize, .. } => (*filesize).into(),
+            ChunkHandle::Dirty { decompressed, .. } => decompressed.len() as u32,
+        }
+    }
+}
+
+pub trait ReadSeek: io::Read + io::Seek {}
+impl<T: io::Read + io::Seek> ReadSeek for T {}
+
+enum ChunkReader<'a, R> {
+    CursorBorrow(io::Cursor<&'a [u8]>),
+    // TODO: convert to borrow from cache
+    CursorOwned(io::Cursor<Vec<u8>>),
+    Reader(R),
+}
+
+impl<'a, R: io::Read> io::Read for ChunkReader<'a, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            ChunkReader::CursorBorrow(r) => r.read(buf),
+            ChunkReader::CursorOwned(r) => r.read(buf),
+            ChunkReader::Reader(r) => r.read(buf),
+        }
+    }
+}
+
+impl<'a, R: io::Seek> io::Seek for ChunkReader<'a, R> {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        match self {
+            ChunkReader::CursorBorrow(r) => r.seek(pos),
+            ChunkReader::CursorOwned(r) => r.seek(pos),
+            ChunkReader::Reader(r) => r.seek(pos),
+        }
+    }
+}
+
+impl<'brand> ChunkHandle<'brand> {
+    pub fn get_reader<'a, Ctx: FileCtx<'brand>>(
+        &'a self,
+        ctx: &'a mut Ctx,
+    ) -> io::Result<impl ReadSeek + 'a> {
+        match self {
+            ChunkHandle::Uncompressed {
+                offset,
+                filesize,
+                brand,
+            } => Ok(ChunkReader::Reader(ctx.get_chunk_reader(
+                *offset as u64,
+                (*filesize).into(),
+                brand,
+            )?)),
+            ChunkHandle::Compressed {
+                offset,
+                filesize,
+                memsize: _,      // TODO: check against decompression output
+                decompressed: _, // TODO: caching
+                brand,
+            } => {
+                let mut reader =
+                    ctx.get_chunk_reader(*offset as u64, (*filesize).into(), &brand)?;
+                let mut compressed = Vec::new();
+                reader.read_to_end(&mut compressed)?;
+                // TODO: cache this
+                let decompressed =
+                    refpack::easy_decompress::<refpack::format::TheSims34>(&compressed)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                Ok(ChunkReader::CursorOwned(io::Cursor::new(decompressed)))
+            }
+            ChunkHandle::Dirty { decompressed, .. } => {
+                Ok(ChunkReader::CursorBorrow(io::Cursor::new(decompressed)))
+            }
+        }
+    }
+
+    // only works on already read compressed items, and unwritten dirty items
+    // fn try_get_reader(&self) -> Option<impl ReadSeek + '_> {
+    //     match self {
+    //         ChunkHandle::Uncompressed { .. } => None,
+    //         ChunkHandle::Compressed { decompressed, .. } => {
+    //             decompressed.as_ref().map(io::Cursor::new)
+    //         }
+    //         ChunkHandle::Dirty { decompressed, .. } => Some(io::Cursor::new(decompressed)),
+    //     }
+    // }
+}
+
+#[derive(Clone, Debug)]
+pub struct DBPFIndexEntry<'brand> {
+    pub resource_type: u32,
+    pub resource_group: u32,
+    pub instance: u64,
+    // chunk_offset: u32,
+    // filesize: u32,
+    pub unk1: bool,
+    // memsize: u32,
+    // compressed: bool, // expose a way to request/disable compression?
+    pub unk2: u16,
+    pub chunk: ChunkHandle<'brand>,
+}
+
+impl<'brand> DBPFIndexEntry<'brand> {
+    fn from_raw(value: IndexEntry, brand: generativity::Id<'brand>) -> Self {
+        DBPFIndexEntry {
+            resource_type: value.resource_type,
+            resource_group: value.resource_group,
+            instance: ((value.instance_hi as u64) << 32) | value.instance_lo as u64,
+            unk1: value.filesize_unk1.unk1(),
+            unk2: value.compressed_unk2.1,
+            chunk: if value.compressed_unk2.0 != 0 {
+                ChunkHandle::Compressed {
+                    offset: value.chunk_offset,
+                    filesize: value.filesize_unk1.filesize(),
+                    memsize: value.memsize,
+                    decompressed: None,
+                    brand,
+                }
+            } else {
+                ChunkHandle::Uncompressed {
+                    offset: value.chunk_offset,
+                    filesize: value.filesize_unk1.filesize(),
+                    brand,
+                }
+            },
+        }
+    }
+}
+
+impl IndexEntry {
+    fn from_nice<'brand>(value: &DBPFIndexEntry<'brand>, current_offset: &mut u32) -> Self {
+        let chunk_offset = *current_offset;
+        let chunk_filesize: u31;
+        let chunk_memsize: u32;
+        let compressed;
+        match value.chunk {
+            ChunkHandle::Uncompressed { filesize, .. } => {
+                compressed = false;
+                chunk_memsize = filesize.into();
+                chunk_filesize = filesize;
+            }
+            ChunkHandle::Compressed {
+                filesize, memsize, ..
+            } => {
+                compressed = true;
+                chunk_memsize = memsize;
+                chunk_filesize = filesize;
+            }
+            ChunkHandle::Dirty {
+                ref decompressed,
+                should_compress: _,
+            } => {
+                compressed = false; // TODO
+                chunk_memsize = decompressed.len().try_into().unwrap();
+                chunk_filesize = u31::try_new(decompressed.len().try_into().unwrap()).unwrap();
+            }
+        }
+        *current_offset += u32::from(chunk_filesize);
+        IndexEntry {
+            resource_type: value.resource_type,
+            resource_group: value.resource_group,
+            instance_hi: (value.instance >> 32) as u32,
+            instance_lo: value.instance as u32,
+            chunk_offset,
+            filesize_unk1: IndexFilesize::new(chunk_filesize, value.unk1),
+            memsize: chunk_memsize,
+            compressed_unk2: (if compressed { 0xFFFF } else { 0 }, value.unk2),
+        }
+    }
+}
+
+mod private {
+    pub trait SealedCtx {}
+    impl SealedCtx for () {}
+    impl<'brand, Read> SealedCtx for super::DBPFReader<'brand, Read> {}
+
+    // pub trait SealedReader {}
+    // impl<T: binrw::io::Read + binrw::io::Seek> SealedReader for T {}
+}
+
+pub enum NeverReader {}
+impl io::Read for NeverReader {
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+        unreachable!()
+    }
+}
+impl io::Seek for NeverReader {
+    fn seek(&mut self, _pos: io::SeekFrom) -> io::Result<u64> {
+        unreachable!()
+    }
+}
+
+pub trait FileReader: private::SealedCtx {
+    type ChunkReader<'r>: io::Read + io::Seek
+    where
+        Self: 'r;
+}
+pub trait FileCtx<'brand>: FileReader {
+    fn get_chunk_reader<'a>(
+        &'a mut self,
+        pos: u64,
+        size: u64,
+        _brand: &generativity::Id<'brand>,
+    ) -> io::Result<Self::ChunkReader<'a>>;
+}
+impl FileReader for () {
+    type ChunkReader<'r> = NeverReader where Self: 'r;
+}
+impl FileCtx<'static> for () {
+    fn get_chunk_reader(
+        &mut self,
+        _pos: u64,
+        _size: u64,
+        _brand: &generativity::Id<'static>,
+    ) -> io::Result<NeverReader> {
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Unable to get chunk reader from unwritten file!",
+        ))
+    }
+}
+impl<'brand, Read: io::Read + io::Seek> FileReader for DBPFReader<'brand, Read> {
+    type ChunkReader<'r> = io::TakeSeek<&'r mut Read> where Self: 'r;
+}
+impl<'brand, Read: io::Read + io::Seek> FileCtx<'brand> for DBPFReader<'brand, Read> {
+    fn get_chunk_reader<'a>(
+        &'a mut self,
+        pos: u64,
+        size: u64,
+        _brand: &generativity::Id<'brand>,
+    ) -> io::Result<io::TakeSeek<&'a mut Read>> {
+        self.0.seek(io::SeekFrom::Start(pos))?;
+        // TODO: this is buggy, since seeks in the resulting reader are relative to the original file!
+        Ok((&mut self.0).take_seek(size))
+    }
+}
+
+pub struct DBPFReader<'brand, Read>(Read, generativity::Id<'brand>);
+
+impl<'brand, Read> DBPFReader<'brand, Read>
+where
+    Read: io::Read + io::Seek,
+{
+    pub fn parse(
+        mut reader: Read,
+        guard: generativity::Guard<'brand>,
+    ) -> BinResult<(Self, DBPF<'brand, Self>)> {
+        let id: generativity::Id = guard.into();
+        let dbpf = DBPF::<'brand>::read(&mut reader, id.clone())?;
+        Ok((DBPFReader(reader, id), dbpf))
+    }
+}
+
+#[derive(Debug)]
+pub struct DBPF<'brand, Ctx> {
+    pub maybe_flags: u32,
+    pub created_timestamp: u32,  // usually 0
+    pub modified_timestamp: u32, // usually 0
+    pub entries: Vec<DBPFIndexEntry<'brand>>,
+    phantom: PhantomData<Ctx>,
+}
+
+impl DBPF<'static, ()> {
+    pub fn new() -> Self {
+        DBPF {
+            maybe_flags: 0,
+            created_timestamp: 0,
+            modified_timestamp: 0,
+            entries: Vec::new(),
+            phantom: PhantomData,
+        }
+    }
+}
+
+// This is *not* a BinRead impl, so that it can be private and I can make it take an Id<'_> instead of a Guard Id<'_>
+impl<'brand, Ctx: FileCtx<'brand>> DBPF<'brand, Ctx> {
+    fn read<R: io::Read + io::Seek>(
+        reader: &mut R,
+        brand: generativity::Id<'brand>,
+    ) -> BinResult<Self> {
+        let header: DBPFHeader = BinRead::read_le(reader)?;
+
+        // index
+        reader.seek(io::SeekFrom::Start(header.index_position as u64))?;
+        let mask: IndexEntryMask = BinRead::read_le(reader)?;
+        let common: PartialIndexEntry = BinRead::read_le_args(reader, (mask,))?;
+        let entries_args = binrw::VecArgs {
+            count: header.index_entries as usize,
+            inner: (common,),
+        };
+        let entries: Vec<IndexEntry> = BinRead::read_le_args(reader, entries_args)?;
+        let entries = entries
+            .into_iter()
+            .map(|e| DBPFIndexEntry::from_raw(e, brand.clone()))
+            .collect();
+
+        Ok(Self {
+            maybe_flags: header.maybe_flags,
+            created_timestamp: header.created_timestamp,
+            modified_timestamp: header.modified_timestamp,
+            entries,
+            phantom: PhantomData,
+        })
+    }
+}
+
+impl<'brand, Ctx: FileCtx<'brand>> binrw::BinWrite for DBPF<'brand, Ctx> {
+    type Args<'a> = Ctx;
+
+    fn write_options<W: std::io::Write + std::io::Seek>(
+        &self,
+        writer: &mut W,
+        endian: binrw::Endian,
+        mut args: Self::Args<'_>,
+    ) -> BinResult<()> {
+        // we write the contents after both the header and index.
+        // we don't know how large the index is going to be yet,
+        // so we'll start after the header and add the size of the index later.
+        let mut current_offset = 96u32;
+        let mut entries: Vec<_> = self
+            .entries
+            .iter()
+            .map(|e| IndexEntry::from_nice(e, &mut current_offset))
+            .collect();
+        let common = PartialIndexEntry::calc_common_entries(entries.iter());
+        let mask = common.calc_mask();
+
+        // (mask + common_fields + different_fields * num_entries) * 4
+        let index_size =
+            (1 + mask.count_present() + (8 - mask.count_present()) * (entries.len() as u32)) * 4;
+        entries
+            .iter_mut()
+            .for_each(|e| e.chunk_offset += index_size);
+
+        let header = DBPFHeader {
+            maybe_flags: self.maybe_flags,
+            created_timestamp: self.created_timestamp,
+            modified_timestamp: self.modified_timestamp,
+            index_entries: self.entries.len() as u32,
+            index_position_old: 0,
+            index_size,
+            hole_index_count: 0,
+            hole_index_position: 0,
+            hole_index_size: 0,
+            index_position: 96,
+            _index_major: 7,
+        };
+
+        header.write_le(writer)?;
+        mask.write_le(writer)?;
+        common.write_le(writer)?;
+        entries.write_le_args(writer, (mask,))?;
+        binrw::BinWrite::write_options(&mask, writer, endian, ())?;
+        binrw::BinWrite::write_options(&common, writer, endian, ())?;
+        binrw::BinWrite::write_options(&entries, writer, endian, (mask,))?;
+        for chunk in self.entries.iter().map(|e| &e.chunk) {
+            std::io::copy(&mut chunk.get_reader(&mut args)?, writer)?;
+        }
+        Ok(())
     }
 }
 
 // 96 bytes in file.
-#[derive(Debug, PartialEq, Pread, Pwrite, Default)]
+#[binrw]
+#[derive(Debug, PartialEq, Default)]
+#[brw(magic = b"DBPF")]
 struct DBPFHeader {
-    magic: u32, // "DBPF"
-    major: u32,
-    minor: u32,
-    unk1: [u8; 24],
+    // Would it be nice to expand to more versions of DBPF eventually?
+    // Sure. But not right now.
+    #[br(temp)]
+    #[brw(magic = 2u32, calc = ())]
+    _major: (), // 2
+    #[br(temp)]
+    #[brw(magic = 0u32, calc = ())]
+    _minor: (), // 0
+    #[br(temp)]
+    #[brw(magic = 0u32, calc = ())]
+    _major_user: (), // 0
+    #[br(temp)]
+    #[brw(magic = 0u32, calc = ())]
+    _minor_user: (), // 0
+
+    maybe_flags: u32,
+    created_timestamp: u32,  // usually 0
+    modified_timestamp: u32, // usually 0
+
+    // #[br(temp)]
+    // #[brw(magic = 7u32, calc = ())]
+    _index_major: u32,
+
     index_entries: u32,
-    unk2: [u8; 4],
+    index_position_old: u32, // "Index Location (DBPF 1.x)"
     index_size: u32,
-    unk3: [u8; 12],
-    index_version: u32, // 3
+    // hole index is usually empty, thus all 0
+    hole_index_count: u32,
+    hole_index_position: u32,
+    hole_index_size: u32,
+
+    #[br(temp)]
+    #[brw(magic = 3u32, calc = ())]
+    _index_minor: (),
+    #[brw(pad_after = 28)]
     index_position: u32,
-    unk4: [u8; 28],
+    //reserved: [u8; 28],
 }
 
-//#[derive(Debug)]
-pub struct DBPFEntry<'a> {
-    pub resource_type: u32,
-    pub resource_group: u32, // TODO: Flags?
-    pub instance: u64,
-    pub unk1: bool,
-    pub unk2: u16,
-    // This holds a slice to the compressed region before
-    // and a possibly owned decompressed slice afterwards
-    // TODO: What if I want to use it, discard, and then reuse again later?
-    data: LazyTransform<&'a [u8], Cow<'a, [u8]>>,
-}
-
-impl<'a> DBPFEntry<'a> {
-    // FIXME: should return Result instead of just panicing.
-    pub fn data(&self) -> &[u8] {
-        &self
-            .data
-            .get_or_create(|mem| Cow::Owned(refpack::easy_decompress::<refpack::format::TheSims34>(mem).unwrap()))
-    }
-}
-
-#[derive(Default)]
-pub struct DBPF<'a> {
-    pub major: u32,
-    pub minor: u32,
-    pub files: Vec<DBPFEntry<'a>>,
-}
-
-impl<'a> ctx::TryFromCtx<'a, ()> for DBPF<'a> {
-    type Error = scroll::Error;
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
-        let header: DBPFHeader = src.pread(0)?;
-        // "DBPF"
-        if header.magic != 0x46504244 {
-            Err(scroll::Error::Custom(format!(
-                "Bad Magic 0x{:x}",
-                header.magic
-            )))?;
-        }
-
-        let files: Vec<_>;
-        if header.index_entries != 0 {
-            let mut index = vec![DBPFIndex::default(); header.index_entries as usize];
-            let index_src = &src[header.index_position as usize
-                                     ..(header.index_position + header.index_size) as usize];
-            let mask: u8 = index_src.pread_with::<u32>(0, LE)? as u8;
-            let offset = &mut 4;
-            let index_header = index_src.gread_with(offset, IndexType::IndexHeader(mask))?;
-            index_src.gread_inout_with(
-                offset,
-                &mut index,
-                IndexType::IndexEntry(mask, index_header),
-            )?;
-            files = index
-                .into_iter()
-                .map(|index| {
-                    let raw = &src[index.chunk_offset..(index.chunk_offset + index.filesize)];
-                    let data = LazyTransform::new(raw);
-                    if !index.compressed {
-                        // We don't need to defer this.
-                        data.get_or_create(|mem| Cow::Borrowed(mem));
-                    }
-
-                    DBPFEntry {
-                        resource_type: index.resource_type,
-                        resource_group: index.resource_group,
-                        instance: index.instance,
-                        unk1: index.unk1,
-                        unk2: index.unk2,
-                        data,
-                    }
-                }).collect::<Vec<_>>();
-        } else {
-            files = Vec::with_capacity(0);
-        }
-
-        let data = DBPF {
-            major: header.major,
-            minor: header.minor,
-            files: files, // already checked for error.
-        };
-        Ok((data, src.len()))
-    }
-}
-
-impl<'a> ctx::TryIntoCtx for DBPF<'a> {
-    type Error = scroll::Error;
-    fn try_into_ctx(self, dest: &mut [u8], _ctx: ()) -> Result<usize, Self::Error> {
-        let mut header = DBPFHeader::default();
-        header.magic = 0x46504244;
-        header.major = self.major;
-        header.minor = self.minor;
-        assert!(self.files.len() <= u32::max_value() as usize);
-        header.index_entries = self.files.len() as u32;
-
-        let mut index_mask = 0xF7u8; // ignore position, will always be decompressed for now.
-        let first = &self.files[0];
-        for entry in &self.files[1..] {
-            if entry.resource_type != first.resource_type {
-                index_mask &= !(1 << 0);
-            }
-            if entry.resource_group != first.resource_group {
-                index_mask &= !(1 << 1);
-            }
-            if entry.instance != first.instance {
-                // FIXME: This is technically two different values...
-                index_mask &= !(0b11 << 2);
-            }
-            if entry.data().len() != first.data().len() || entry.unk1 != first.unk1 {
-                // FIXME: as above, except I'm not dealing with compression yet.
-                index_mask &= !(0b11 << 5);
-            }
-            if entry.unk2 != first.unk2 {
-                index_mask &= !(1 << 7);
-            }
-        }
-        let index_size = (index_mask.count_ones() + (!index_mask).count_ones() * header.index_entries) * std::mem::size_of::<u32>() as u32;
-        let (header_area, rest) = dest.split_at_mut(96);
-        let (index_area, file_area) = rest.split_at_mut(index_size as usize);
-
-        header.index_version = 3;
-        let mut index_offset = 0;
-        if self.files.len() != 0 {
-            header.index_size = index_size as u32;
-            header.index_position = 96; // located just after header.
-            index_area.gwrite::<u32>(index_mask as u32, &mut index_offset)?;
-            index_area.gwrite_with(DBPFIndex {
-                resource_type: self.files[0].resource_type,
-                resource_group: self.files[0].resource_group,
-                instance: self.files[0].instance,
-                chunk_offset: 0, // this should never be included in the index header.
-                filesize: self.files[0].data().len(),
-                unk1: self.files[0].unk1,
-                memsize: self.files[0].data().len() as u32,
-                compressed: false,
-                unk2: self.files[0].unk2,
-            }, &mut index_offset, IndexType::IndexHeader(index_mask))?;
-        } else {
-            header.index_size = 0;
-            header.index_position = 0;
-        }
-
-        header_area.pwrite(header, 0)?;
-        let mut file_offset: usize = 0;
-        for file in self.files {
-            index_area.gwrite_with(DBPFIndex {
-                resource_type: file.resource_type,
-                resource_group: file.resource_group,
-                instance: file.instance,
-                chunk_offset: (96 + index_size) as usize + file_offset,
-                filesize: file.data().len(),
-                unk1: file.unk1,
-                memsize: file.data().len() as u32,
-                compressed: false,
-                unk2: file.unk2,
-            }, &mut index_offset, IndexType::IndexEntry(index_mask, DBPFIndex::default()))?;
-            file_area.gwrite(file.data(), &mut file_offset)?;
-        }
-
-        Ok((96 + index_size) as usize + file_offset)
-    }
-}
-
-impl<'a> DBPF<'a> {
-    pub fn new(mem: &'a [u8]) -> Result<DBPF, scroll::Error> {
-        mem.pread::<DBPF>(0)
-    }
-
+impl<'brand, Ctx: FileCtx<'brand>> DBPF<'brand, Ctx> {
     // instance -> name
-    pub fn gather_names(&self) -> Result<BTreeMap<u64, String>, binrw::Error> {
+    pub fn gather_names(&self, ctx: &mut Ctx) -> Result<BTreeMap<u64, String>, binrw::Error> {
         let mut map = BTreeMap::new();
-        self.files.iter()
+        self.entries
+            .iter()
             .filter(|e| e.resource_type == filetypes::ResourceType::NMAP as u32)
-            .map(|e| filetypes::nmap::gather_names_into(e, &mut map))
+            .map(|e| filetypes::nmap::gather_names_into(ctx, e, &mut map))
             .collect::<Result<_, binrw::Error>>()?;
         Ok(map)
     }

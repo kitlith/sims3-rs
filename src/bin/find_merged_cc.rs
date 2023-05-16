@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use structopt::StructOpt;
 
 use self::dbpf::filetypes::ResourceType;
-use self::dbpf::DBPF;
+use self::dbpf::{DBPFReader, DBPF};
 use sims3_rs::dbpf;
 
 use std::collections::HashSet;
@@ -10,7 +10,6 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::iter::{FromIterator, Iterator};
 
-use memmap::Mmap;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
@@ -39,12 +38,12 @@ use walkdir::WalkDir;
 //     0x062d9b1700000001062d9b1700000001u128 => "Movie Stuff Pack"
 // };
 
-fn filter_tgi_into_map(package: &DBPF<'_>, merged: bool) -> HashSet<(u32, u32, u64)> {
+fn filter_tgi_into_map<Ctx>(package: &DBPF<'_, Ctx>, merged: bool) -> HashSet<(u32, u32, u64)> {
     //println!("DBPF Ver. {}.{}", package.major, package.minor);
     // TODO: Use rayon?
     let tgi_set = HashSet::from_iter(
         package
-            .files
+            .entries
             .iter()
             .filter(|entry| {
                 // Clothing, hair, etc.
@@ -59,16 +58,20 @@ fn filter_tgi_into_map(package: &DBPF<'_>, merged: bool) -> HashSet<(u32, u32, u
                 // Clothing has duplicates, so unless this is the package I'm searching I only
                 // want to see it if there's nothing else.
              || (merged && entry.resource_type == ResourceType::XMLResource as u32)
-            }).map(|entry| (entry.resource_type, entry.resource_group, entry.instance)),
+            })
+            .map(|entry| (entry.resource_type, entry.resource_group, entry.instance)),
     );
 
     if !tgi_set.is_empty() {
         tgi_set
-    } else { // If there's nothing else of interest, now pattern XMLs are interesting.
+    } else {
+        // If there's nothing else of interest, now pattern XMLs are interesting.
         HashSet::from_iter(
-            package.files.iter()
+            package
+                .entries
+                .iter()
                 .filter(|entry| entry.resource_type == ResourceType::XMLResource as u32)
-                .map(|entry| (entry.resource_type, entry.resource_group, entry.instance))
+                .map(|entry| (entry.resource_type, entry.resource_group, entry.instance)),
         )
     }
 }
@@ -85,29 +88,24 @@ struct Opt {
     input_file: PathBuf,
 
     /// Directories to search for custom content in
-    #[structopt(
-        name = "DIR",
-        parse(from_os_str),
-        required = true,
-        min_values = 1
-    )]
+    #[structopt(name = "DIR", parse(from_os_str), required = true, min_values = 1)]
     search_dirs: Vec<PathBuf>,
 }
 
-fn main() -> Result<(), scroll::Error> {
+fn main() -> Result<(), binrw::Error> {
     let opt = Opt::from_args();
 
     let find;
     {
-        // Turn my file into a byte array usable with scroll.
-        // *PLEASE* don't modify the file behind my back.
-        let mem = File::open(&opt.input_file).and_then(|f| unsafe { Mmap::map(&f) })?;
-        let merged = DBPF::new(&mem)?;
+        let file = File::open(&opt.input_file)?;
+        generativity::make_guard!(guard);
+        let (mut _reader, merged) = DBPFReader::parse(std::io::BufReader::new(file), guard)?;
         find = filter_tgi_into_map(&merged, true);
     }
 
     // Maybe parse Resource.cfg if present?
-    opt.search_dirs.iter()
+    opt.search_dirs
+        .iter()
         .flat_map(|path| WalkDir::new(path))
         .par_bridge() // TODO: filter before or after bridging to rayon?
         .filter_map(|e| e.ok())
@@ -116,15 +114,24 @@ fn main() -> Result<(), scroll::Error> {
             // println!("Testing {}", e.path().display());
             // Turn my file into a byte array usable with scroll.
             // *PLEASE* don't modify the file behind my back.
-            let mem = File::open(e.path()).and_then(|f| unsafe { Mmap::map(&f) })
-                            .expect("Failed to open file!");
-            let package = DBPF::new(&mem).expect("Failed to parse DBPF!");
+            let file = File::open(e.path()).expect("Failed to open file!");
+            generativity::make_guard!(guard);
+            let (mut _reader, package) = DBPFReader::parse(std::io::BufReader::new(file), guard)
+                .expect("Failed to parse DBPF!");
+
             let hashes = filter_tgi_into_map(&package, false);
             let intersection: HashSet<_> = find.intersection(&hashes).collect();
             if !intersection.is_empty() {
                 // println!("{}: {:X?}", e.file_name().to_string_lossy(), intersection);
                 // TODO: print relative path
-                println!("{}", if opt.full_path { e.path().to_string_lossy() } else { e.file_name().to_string_lossy() });
+                println!(
+                    "{}",
+                    if opt.full_path {
+                        e.path().to_string_lossy()
+                    } else {
+                        e.file_name().to_string_lossy()
+                    }
+                );
             }
         });
 

@@ -1,10 +1,9 @@
-use std::{env, fs::File, path::Path};
+use std::{env, fs::File};
 
-use memmap::Mmap;
 
-use sims3_rs::dbpf::DBPF;
+use sims3_rs::dbpf::DBPFReader;
 
-fn main() -> Result<(), scroll::Error> {
+fn main() -> Result<(), binrw::Error> {
     let args: Vec<_> = env::args_os().collect();
     if args.len() < 4 {
         println!(
@@ -25,21 +24,24 @@ fn main() -> Result<(), scroll::Error> {
 
     let output_path = &args[3];
 
-    let mem = File::open(Path::new(package_path)).and_then(|f| unsafe { Mmap::map(&f) })?;
-    let package = DBPF::new(&mem)?;
+    let file = File::open(package_path)?;
+    generativity::make_guard!(guard);
+    let (mut reader, package) = DBPFReader::parse(std::io::BufReader::new(file), guard)?;
 
-    let data = package
-        .files
+    let entry = package
+        .entries
         .iter()
         .find(|entry| {
             entry.resource_type == res_type
                 && entry.resource_group == res_group
                 && entry.instance == instance
         })
-        .unwrap()
-        .data();
+        .unwrap();
 
-    std::fs::write(output_path, data).unwrap();
+    let mut chunk_reader = entry.chunk.get_reader(&mut reader)?;
+
+    let mut output_file = File::create(output_path)?;
+    std::io::copy(&mut chunk_reader, &mut output_file)?;
 
     Ok(())
 }

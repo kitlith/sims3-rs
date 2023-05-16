@@ -1,18 +1,87 @@
-use std::{env, ffi::OsStr, fs::File, io::{Cursor, BufWriter, Write}, path::Path};
+use std::{
+    env,
+    ffi::OsStr,
+    fmt::Display,
+    fs::File,
+    io::{BufWriter, Cursor, Write},
+    panic::catch_unwind,
+    path::Path,
+};
 
-use memmap::Mmap;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
-use sims3_rs::dbpf::{filetypes::ResourceType, DBPF};
+use sims3_rs::dbpf::{filetypes::ResourceType, DBPFReader};
 
-use binrw::{binread, BinRead};
+use binrw::{binread, error::ContextExt, io, BinRead, PosValue};
 
 use std::sync::mpsc;
 
 #[binread]
+#[derive(Debug, Clone, Copy)]
+struct ITG {
+    instance: u64,
+    ty: u32,
+    group: u32,
+}
+
+impl Display for ITG {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "TGI({:08x}:{:08x}:{:016x})",
+            self.ty, self.group, self.instance
+        )
+    }
+}
+
+#[derive(Debug, BinRead, Clone, Copy)]
+struct Dummy;
+
+impl binrw::file_ptr::IntoSeekFrom for Dummy {
+    fn into_seek_from(self) -> io::SeekFrom {
+        io::SeekFrom::Current(0)
+    }
+}
+
+type Placement<T> = binrw::FilePtr<Dummy, T>;
+
+#[binread]
+#[br(import(pos: u64))]
+struct RCOLChunk {
+    #[br(temp)]
+    position: u32,
+    #[br(temp)]
+    size: u32,
+    #[br(args { offset: position as u64 + pos, inner: binrw::args! { count: size as usize }})]
+    data: Placement<Vec<u8>>,
+}
+
+#[binread]
+struct RCOL {
+    #[br(temp)]
+    pos: PosValue<()>,
+    #[brw(magic = 3u32)]
+    _version: (),
+    #[br(temp)]
+    public_internal_count: u32,
+    #[br(temp)]
+    unused: u32,
+    #[br(temp)]
+    external_count: u32,
+    #[br(temp)]
+    internal_count: u32,
+    #[br(count = internal_count)]
+    _internal_idents: Vec<ITG>,
+    #[br(count = external_count)]
+    _references: Vec<ITG>,
+    #[br(args { count: internal_count as usize, inner: (pos.pos,)})]
+    chunks: Vec<RCOLChunk>,
+}
+
+#[binread]
 struct MTNF {
-    //#[br(dbg)]
+    #[br(temp)]
     size: u32,
     #[br(pad_after = size)]
     _skip: (),
@@ -29,10 +98,11 @@ struct VertexAttribute {
 
 #[binread]
 struct SubMesh {
+    #[br(temp)]
     index_size: u8,
     index_count: u32,
     #[br(pad_after = index_size as usize * index_count as usize)]
-    _index_buffer: (),
+    _index_buffer: (), // TODO: read data
 }
 
 #[binread]
@@ -62,41 +132,55 @@ struct Geometry {
     items: Vec<SubMesh>,
 }
 
-fn geom_information(path: &Path, send: &mut mpsc::Sender<(String, usize, usize)>) -> Result<(), scroll::Error> {
-    let mem = File::open(path).and_then(|f| unsafe { Mmap::map(&f) })?;
-    let package = DBPF::new(&mem)?;
+fn geom_information(path: &Path) -> Result<Option<(String, usize, usize)>, binrw::Error> {
+    let file = File::open(path)?;
+    generativity::make_guard!(guard);
+    let (mut reader, package) = DBPFReader::parse(std::io::BufReader::new(file), guard)?;
 
     let mut entries = package
-        .files
+        .entries
         .iter()
         .filter(|entry| entry.resource_type == ResourceType::GEOM as u32)
+        // Workaround: I've found *one* file that has LODs "present" but a size of 0, therefore it immediately fails to read anything.
+        //  This prevents it from printing an error message for this case.
+        .filter(|entry| entry.chunk.memsize() != 0)
         .map(|entry| {
-            let magic = memchr::memmem::find(entry.data(), b"GEOM").unwrap_or_else(|| {
-                panic!(
-                    "failed to find chunk in {:04x}:{:04x}:{:08x}",
-                    entry.resource_type, entry.resource_group, entry.instance
-                )
-            });
-            let geom: Geometry = BinRead::read_le(&mut Cursor::new(&entry.data()[magic..]))
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "failed to parse GEOM in {:04x}:{:04x}:{:08x} -- {}",
-                        entry.resource_type, entry.resource_group, entry.instance, e
-                    )
-                });
-            (
+            let mut reader = entry.chunk.get_reader(&mut reader)?;
+            let itg = ITG {
+                ty: entry.resource_type,
+                group: entry.resource_group,
+                instance: entry.instance,
+            };
+            let rcol = RCOL::read_le(&mut reader)
+                .with_message("parsing RCOL")
+                .with_context(itg)?;
+
+            let geom: Geometry = BinRead::read_le(&mut Cursor::new(
+                &rcol.chunks[0].data.value.as_ref().unwrap(),
+            ))
+            .with_message("parsing GEOM")
+            .with_context(itg)?;
+            Ok::<_, binrw::Error>((
                 geom.vertex_count,
                 geom.items
                     .iter()
                     .map(|i| i.index_count as usize)
                     .sum::<usize>(),
                 geom.items.len(),
-            )
+            ))
+        })
+        .filter_map(|r| match r {
+            Ok(res) => Some(res),
+            Err(e) => {
+                let e = e.with_message(path.to_string_lossy().into_owned());
+                println!("Chunk Error: {}", e);
+                None
+            }
         })
         .collect::<Vec<_>>();
 
     if entries.len() == 0 {
-        return Ok(());
+        return Ok(None);
     }
 
     entries.sort_by_key(|&(_, count, _)| count);
@@ -119,20 +203,32 @@ fn geom_information(path: &Path, send: &mut mpsc::Sender<(String, usize, usize)>
         }
     );
 
-    send.send((filename.into_owned(), entries[0].0 as usize, entries[0].1 / 3)).unwrap();
-
-    Result::<_, scroll::Error>::Ok(())
+    Ok(Some((
+        filename.into_owned(),
+        entries[0].0 as usize,
+        entries[0].1 / 3,
+    )))
 }
 
 fn main() -> Result<(), scroll::Error> {
     let _ = std::panic::catch_unwind(|| {
         let (send, recv) = mpsc::channel::<(String, usize, usize)>();
         std::thread::spawn(move || {
-            let output = File::create(dirs::desktop_dir().unwrap().join("sims3_geom_poly_count.csv")).unwrap();
+            let output = File::create(
+                dirs::desktop_dir()
+                    .unwrap()
+                    .join("sims3_geom_poly_count.csv"),
+            )
+            .unwrap();
             let mut output = BufWriter::new(output);
             writeln!(&mut output, "Filename, Max Vertices, Max Polygons").unwrap();
             for (filename, verticies, triangles) in recv {
-                writeln!(&mut output, "\"{}\", {}, {}", filename, verticies, triangles).unwrap();
+                writeln!(
+                    &mut output,
+                    "\"{}\", {}, {}",
+                    filename, verticies, triangles
+                )
+                .unwrap();
             }
         });
         let args: Vec<_> = env::args_os().collect();
@@ -151,12 +247,23 @@ fn main() -> Result<(), scroll::Error> {
             .filter_map(Result::ok)
             .filter(|ref e| e.path().extension() == Some(OsStr::new("package")))
             .for_each_with(send, move |send, e| {
-                if let Err(err) = geom_information(e.path(), send) {
-                    println!(
+                //.for_each(|e| {
+                let res = catch_unwind(|| geom_information(e.path()));
+                match res {
+                    Err(unwind) => println!(
+                        "Caught panic while parsing {}: {:?}",
+                        // e.path().file_name().unwrap().to_string_lossy(),
+                        e.path().to_string_lossy(),
+                        unwind
+                    ),
+                    Ok(Err(err)) => println!(
                         "Error while parsing {}: {}",
-                        e.path().file_name().unwrap().to_string_lossy(),
+                        // e.path().file_name().unwrap().to_string_lossy(),
+                        e.path().to_string_lossy(),
                         err
-                    );
+                    ),
+                    Ok(Ok(Some(res))) => drop(send.send(res)),
+                    Ok(Ok(None)) => {}
                 }
             });
     });

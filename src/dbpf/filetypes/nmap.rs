@@ -1,8 +1,8 @@
 use super::ResourceType;
-use crate::dbpf::DBPFEntry;
+use crate::dbpf::{DBPFIndexEntry, FileCtx};
 use std::collections::BTreeMap;
 
-use binrw::{binrw, BinRead, BinResult, io};
+use binrw::{binrw, BinRead, BinResult};
 
 use crate::util::{write_btreemap, LengthString};
 
@@ -33,12 +33,12 @@ pub struct NMAP {
     map: BTreeMap<u64, LengthString>,
 }
 
-pub fn gather_names_into(entry: &DBPFEntry<'_>, name_map: &mut BTreeMap<u64, String>) -> BinResult<()> {
+pub fn gather_names_into<'brand>(ctx: &mut impl FileCtx<'brand>, entry: &DBPFIndexEntry<'brand>, name_map: &mut BTreeMap<u64, String>) -> BinResult<()> {
     if entry.resource_type != ResourceType::NMAP as u32 {
         return Err(binrw::Error::AssertFail { pos: 0, message: "Not an NMAP tag.".to_string() });
     }
 
-    let mut reader = io::Cursor::new(entry.data());
+    let mut reader = entry.chunk.get_reader(ctx)?;
     let nmap: NMAP = BinRead::read_le(&mut reader)?;
     name_map.extend(nmap.map.into_iter().map(|(i, s)| (i, String::from_utf8_lossy(&s.inner).into_owned())));
 
