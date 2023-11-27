@@ -5,7 +5,7 @@ use std::{
     fs::File,
     io::{BufWriter, Cursor, Write},
     panic::catch_unwind,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use rayon::prelude::*;
@@ -16,6 +16,8 @@ use sims3_rs::dbpf::{filetypes::ResourceType, DBPFReader};
 use binrw::{binread, error::ContextExt, io, BinRead, PosValue};
 
 use std::sync::mpsc;
+
+use clap::Parser;
 
 #[binread]
 #[derive(Debug, Clone, Copy)]
@@ -156,7 +158,7 @@ fn geom_information(path: &Path) -> Result<Option<(String, usize, usize)>, binrw
                 .with_context(itg)?;
 
             let geom: Geometry = BinRead::read_le(&mut Cursor::new(
-                &rcol.chunks[0].data.value.as_ref().unwrap(),
+                &rcol.chunks[0].data.value,
             ))
             .with_message("parsing GEOM")
             .with_context(itg)?;
@@ -210,37 +212,37 @@ fn geom_information(path: &Path) -> Result<Option<(String, usize, usize)>, binrw
     )))
 }
 
+#[derive(Parser)]
+#[command(name = "geom_tri_count")]
+struct Opt {
+    #[arg(short, long)]
+    summary: Option<PathBuf>,
+    #[arg(num_args = 1..)]
+    paths: Vec<PathBuf>
+}
+
 fn main() -> Result<(), scroll::Error> {
     let _ = std::panic::catch_unwind(|| {
-        let (send, recv) = mpsc::channel::<(String, usize, usize)>();
-        std::thread::spawn(move || {
-            let output = File::create(
-                dirs::desktop_dir()
-                    .unwrap()
-                    .join("sims3_geom_poly_count.csv"),
-            )
-            .unwrap();
-            let mut output = BufWriter::new(output);
-            writeln!(&mut output, "Filename, Max Vertices, Max Polygons").unwrap();
-            for (filename, verticies, triangles) in recv {
-                writeln!(
-                    &mut output,
-                    "\"{}\", {}, {}",
-                    filename, verticies, triangles
-                )
-                .unwrap();
-            }
+        let opt = Opt::parse();
+        let send = opt.summary.map(|summary| {
+            let (send, recv) = mpsc::channel::<(String, usize, usize)>();
+            std::thread::spawn(move || {
+                let output = File::create(summary).unwrap();
+                let mut output = BufWriter::new(output);
+                writeln!(&mut output, "Filename, Max Vertices, Max Polygons").unwrap();
+                for (filename, verticies, triangles) in recv {
+                    writeln!(
+                        &mut output,
+                        "\"{}\", {}, {}",
+                        filename, verticies, triangles
+                    )
+                    .unwrap();
+                }
+            });
+            send
         });
-        let args: Vec<_> = env::args_os().collect();
-        if args.len() < 2 {
-            println!(
-                "Usage: {} [packages/directories]",
-                args[0].to_string_lossy()
-            );
-            return;
-        }
 
-        args.iter()
+        opt.paths.iter()
             .skip(1)
             .flat_map(WalkDir::new)
             .par_bridge()
@@ -262,7 +264,7 @@ fn main() -> Result<(), scroll::Error> {
                         e.path().to_string_lossy(),
                         err
                     ),
-                    Ok(Ok(Some(res))) => drop(send.send(res)),
+                    Ok(Ok(Some(res))) => if let Some(send) = send { drop(send.send(res)) },
                     Ok(Ok(None)) => {}
                 }
             });

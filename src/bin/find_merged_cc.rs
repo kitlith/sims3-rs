@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use structopt::StructOpt;
+use clap::Parser;
 
 use self::dbpf::filetypes::ResourceType;
 use self::dbpf::{DBPFReader, DBPF};
@@ -76,24 +76,24 @@ fn filter_tgi_into_map<Ctx>(package: &DBPF<'_, Ctx>, merged: bool) -> HashSet<(u
     }
 }
 
-#[derive(StructOpt, Debug)]
-#[structopt(name = "find_merged_cc")]
+#[derive(clap::Parser, Debug)]
+#[command(author, version, name = "find_merged_cc", about = "todo", long_about = None)]
 struct Opt {
     /// Print full paths instead of just the package filenames
-    #[structopt(short = "v", long = "full")]
+    #[arg(short = 'v', long = "full")]
     full_path: bool,
 
     /// Merged file that contains custom content
-    #[structopt(name = "PACKAGE", parse(from_os_str))]
+    #[arg(name = "PACKAGE")]
     input_file: PathBuf,
 
     /// Directories to search for custom content in
-    #[structopt(name = "DIR", parse(from_os_str), required = true, min_values = 1)]
+    #[structopt(name = "DIR", required = true, num_args = 1..)]
     search_dirs: Vec<PathBuf>,
 }
 
 fn main() -> Result<(), binrw::Error> {
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
 
     let find;
     {

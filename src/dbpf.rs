@@ -241,7 +241,7 @@ impl<'brand> ChunkHandle<'brand> {
                 reader.read_to_end(&mut compressed)?;
                 // TODO: cache this
                 let decompressed =
-                    refpack::easy_decompress::<refpack::format::TheSims34>(&compressed)
+                    refpack::easy_decompress::<refpack::format::SimEA>(&compressed)
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
                 Ok(ChunkReader::CursorOwned(io::Cursor::new(decompressed)))
             }
