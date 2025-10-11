@@ -589,7 +589,7 @@ impl<'brand, Ctx: FileCtx<'brand>> DBPF<'brand, Ctx> {
             .iter()
             .filter(|e| e.resource_type == filetypes::ResourceType::NMAP as u32)
             .map(|e| filetypes::nmap::gather_names_into(ctx, e, &mut map))
-            .collect::<Result<_, binrw::Error>>()?;
+            .collect::<Result<(), binrw::Error>>()?;
         Ok(map)
     }
 }

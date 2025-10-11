@@ -16,7 +16,7 @@ lazy-init = "0.5.0"
 rayon = "1.0.2"
 lazy_static = "1.1.0"
 clap = { version = "4.4", features = ["derive"] }
-binrw = "0.13"
+binrw = "0.15"
 memchr = "2.5"
 dont_disappear = "3.0.1"
 dirs = "5.0.0"
